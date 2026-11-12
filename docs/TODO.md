@@ -1,7 +1,9 @@
 # Team split, timeline and tasks
 
-Spec: [PROPOSAL.md](../PROPOSAL.md). File formats: [CONTRACTS.md](CONTRACTS.md).
-Every task below is a GitHub issue (same ID in the title, for example `[P3]`). The issue holds the detailed checklist. This file is the overview.
+Spec: [PROPOSAL.md](../PROPOSAL.md). Formats and interfaces: [CONTRACTS.md](CONTRACTS.md). How to work on an issue: [AGENTS.md](../AGENTS.md).
+Every task below is a GitHub issue (same ID in the title, for example `[P3]`). Each issue is self-contained: context, dependencies, files, interface, steps, edge cases and acceptance criteria. This file is the overview.
+
+Dependency order: G0 -> D1 -> D2 -> E1/E2/E3 -> E4/E6 -> probing, CKA, cross-linguistic. The lens (L1, L2) only needs G0 and can start on day 1.
 
 Rules:
 - Each person edits only their own folders (section 1). Changes to `src/lib/` go through a small PR reviewed by one other member.
@@ -13,8 +15,8 @@ Rules:
 | Person | Workstream | Owns | Availability |
 | :-- | :-- | :-- | :-- |
 | Marcin Czarnecki | E: shared extraction (English models) | `src/lib/alignment.py`, `src/lib/features.py`, `src/lib/control_tasks.py`, `scripts/01_extract_features.py` | Nov 13-16 only |
-| Gianluca Panzani | P: probes, probing metrics, GPT-2 vs BERT | `src/ws1_probing/`, `src/lib/metrics.py`, `src/lib/data.py` | Full |
-| Filippo Gigante | C: CKA and compression, plus data preparation | `src/ws2_compression/`, `scripts/00_download_data.py` | Full |
+| Gianluca Panzani | G0 registry, then P: probes, probing metrics, GPT-2 vs BERT | `src/lib/registry.py`, `src/lib/data.py`, `src/lib/metrics.py`, `src/ws1_probing/`, `configs/models.yaml`, `configs/datasets.yaml` | Full |
+| Filippo Gigante | C: CKA and compression, plus data preparation | `src/ws2_compression/`, `src/lib/paths.py`, `src/lib/word_table.py`, `scripts/00_download_data.py`, `scripts/02_build_word_tables.py` | Full |
 | Matteo Salvini | L: lens spectrum and probing bridge | `src/ws4_lens/` | Full |
 | Arcangelo Chine | X: cross-linguistic, plus Italian and multilingual extraction | `src/ws3_crossling/` | Full |
 | All | `src/viz/`, `app/`, `docs/` | Shared, through PRs | Phase 2 and 3 |
@@ -28,7 +30,7 @@ Why:
 
 | Milestone | Due | Contents |
 | :-- | :-- | :-- |
-| M0 Foundation | Nov 14 | D1, D2, E1, E2, E3, P1, L1 |
+| M0 Foundation | Nov 14 | G0 (Nov 13 morning), D1, D2, E1, E2, E3, P1, L1, X1 |
 | M1 Features ready | Nov 16 | E4, E5, X1 (all extraction runs done) |
 | M2 Phase 1 results | Nov 18 | P2-P6, C1-C4, L2-L6, X2-X4 first results |
 | M3 Phase 2 plots | Nov 25 | cross-analysis plots, remaining runs, X5, L7, L8 |
@@ -38,11 +40,12 @@ Why:
 
 `HW` marks long tasks that are split on purpose and where a free member should join.
 
-### Data (Filippo, first two days)
+### Foundation and data (first two days)
 | ID | Task | Owner | Due |
 | :-- | :-- | :-- | :-- |
+| G0 | Model and treebank registry, `UPOS_TAGS`, `requirements.txt` (blocks everything, merge first) | Gianluca | Nov 13 |
 | D1 | Download script for EWT, ISDT, PUD EN and IT (`scripts/00_download_data.py`) | Filippo | Nov 13 |
-| D2 | Word table builder: parquet files with `next_upos`, multiword tokens skipped, per CONTRACTS.md section 1 | Filippo | Nov 14 |
+| D2 | Word tables (parquet) and `lib/paths.py`, per CONTRACTS.md sections 2 and 10 | Filippo | Nov 14 |
 
 ### Extraction (Marcin, with Arcangelo for the rest)
 | ID | Task | Owner | Due |
@@ -115,8 +118,9 @@ Why:
 - [ ] One command re-runs extraction for one model.
 
 ## 5. CI and GitHub setup
-- CI runs on pull requests to `main` only, only when code or CI files change, cancels superseded runs and has a 5 minute limit. It runs `ruff` and `pytest`, without installing torch.
-- Tests that need torch must start with `pytest.importorskip("torch")`, so they are skipped in CI and run locally.
+- CI runs on pull requests to `main` only, only when code or CI files change, cancels superseded runs and has a 5 minute limit. It runs `ruff` and `pytest -m "not slow"`, without installing torch.
+- Tests that need torch must start with `pytest.importorskip("torch")`, so they are skipped in CI and run locally. Tests that download models or data are marked `@pytest.mark.slow` (see `pytest.ini`).
+- Results write-ups live in `docs/results/` (one file per workstream) and feed the report (R1).
 - Everyone runs `ruff check src tests scripts app` and `PYTHONPATH=src pytest -q` before opening a PR.
 
 ## 6. Decisions to make as a team

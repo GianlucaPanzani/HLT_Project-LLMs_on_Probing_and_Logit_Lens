@@ -2,6 +2,7 @@
 
 Layer-by-layer analysis of frozen Transformers with supervised probing (UPOS) and the logit/tuned/Jacobian lens.
 
+- How to work on an issue (people and coding agents): [AGENTS.md](AGENTS.md)
 - Specification: [PROPOSAL.md](PROPOSAL.md)
 - Who does what and when: [docs/TODO.md](docs/TODO.md)
 - File and data formats: [docs/CONTRACTS.md](docs/CONTRACTS.md)

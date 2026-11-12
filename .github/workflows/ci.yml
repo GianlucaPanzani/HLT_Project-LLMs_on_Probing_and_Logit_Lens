@@ -34,9 +34,9 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: .github/workflows/ci.yml
-      - run: pip install ruff pytest numpy pandas
+      - run: pip install ruff pytest numpy pandas pyarrow pyyaml scikit-learn
       - run: ruff check src tests scripts app
       - name: Tests (exit code 5 means no tests collected yet, which is fine)
         env:
           PYTHONPATH: src
-        run: pytest -q || [ $? -eq 5 ]
+        run: pytest -q -m "not slow" || [ $? -eq 5 ]
