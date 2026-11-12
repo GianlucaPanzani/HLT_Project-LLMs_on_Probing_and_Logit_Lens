@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from conllu import parse_incr
 import torch
+from conllu import parse_incr
 from transformers import (
     AutoConfig,
     AutoModel,
@@ -103,9 +103,10 @@ def load_model(
     device: str | None = None,
     revision: str = "main",
     tokenizer_kwargs: dict | None = None,
+    dtype: str | torch.dtype | None = None,
 ):
     '''
-    Load a encoder (bidirectional LM) or decoder (causal LM), freeze all
+    Load an encoder (bidirectional LM) or decoder (causal LM), freeze all
     model parameters and enable evaluation mode.
 
     Parameters
@@ -113,7 +114,7 @@ def load_model(
     - checkpoint (str): Hugging Face repository ID or local directory containing
     the model configuration and, when random_weights=False, pretrained weights.
     The same location is used to load the tokenizer.
-    - kind (str): Model category; must be "encoder" or "causal". Causal models
+    - kind (str): Model category; must be "encoder" or "decoder". Decoder models
     are loaded with their language modeling output head.
     - random_weights (bool): If True, initialize a new model from the checkpoint
     configuration instead of loading pretrained weights. The tokenizer is
@@ -128,6 +129,10 @@ def load_model(
     - tokenizer_kwargs (dict | None): Additional tokenizer loading options,
     such as {"add_prefix_space": True} for pretokenized GPT-2 inputs.
     A fast tokenizer is required. Defaults to None.
+    - dtype (str | torch.dtype | None): Parameter precision, for example
+    "float16" or "bfloat16" for large models such as mGPT. A string is
+    resolved to the matching torch dtype. If None, use the default float32.
+    Defaults to None.
 
     Returns
     -------
@@ -138,7 +143,7 @@ def load_model(
     - tokenizer (PreTrainedTokenizerFast): Tokenizer configured for right
     padding. If no padding token exists, the EOS token is reused.
     - metadata (dict): Checkpoint, revision, model category, random initialization
-    flag, initialization seed or None, device, number of Transformer layers,
+    flag, initialization seed or None, device, parameter dtype, number of Transformer layers,
     hidden-state dimension and vocabulary size.
     '''
     model_classes = {
@@ -188,15 +193,25 @@ def load_model(
     config.pad_token_id = tokenizer.pad_token_id
 
     # Create the model
-    model = model_class.from_pretrained(
-        checkpoint,
-        revision=revision,
-        config=config,
-    )
-    if random_weights: # it randomize the weights of the pretrained model but for our purposes it should be always False
+    if isinstance(dtype, str):
+        dtype = getattr(torch, dtype, None)
+        if not isinstance(dtype, torch.dtype):
+            raise ValueError("dtype must name a torch dtype, e.g. 'float16'.")
+
+    if random_weights:
+        # Build from the configuration only: pretrained weights are never downloaded.
         with torch.random.fork_rng(): # preserve the caller's random-number generator state
             torch.manual_seed(seed)
             model = model_class.from_config(config)
+        if dtype is not None:
+            model = model.to(dtype)
+    else:
+        model = model_class.from_pretrained(
+            checkpoint,
+            revision=revision,
+            config=config,
+            torch_dtype=dtype,
+        )
     model.requires_grad_(False)
     model.eval()
     model.to(device)
@@ -208,6 +223,7 @@ def load_model(
         "random_weights": random_weights,
         "seed": seed if random_weights else None,
         "device": str(device),
+        "dtype": str(next(model.parameters()).dtype),
         "num_layers": config.num_hidden_layers,
         "hidden_size": config.hidden_size,
         "vocab_size": config.vocab_size,
