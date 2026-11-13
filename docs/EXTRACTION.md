@@ -42,21 +42,27 @@ Expected control mapping sizes (UD r2.19, measured): `ewt` 19,674 word types (20
 Disk is exactly `rows x (L + 1) x d x 2 bytes` (float16): for a 768-dim model, 1,536 bytes per row and layer.
 Word table rows (UD r2.19): EWT train 204,578, dev 25,148, test 25,094; PUD EN 21,180; ISDT train 276,014, dev 11,907, test 10,417; PUD IT 23,783.
 
-| Run | Rows | Disk | Time (GPU) | `n_nan_rows` | Done |
-| :-- | --: | --: | --: | --: | :-- |
-| bert ewt pretrained first | 254,820 | 5.1 GB | TODO | TODO | [ ] |
-| bert pud_en pretrained first | 21,180 | 0.42 GB | TODO | TODO | [ ] |
-| bert ewt random first | 254,820 | 5.1 GB | TODO | TODO | [ ] |
-| distilbert ewt pretrained first | 254,820 | 2.7 GB | TODO | TODO | [ ] |
-| distilbert pud_en pretrained first | 21,180 | 0.23 GB | TODO | TODO | [ ] |
-| distilbert ewt random first | 254,820 | 2.7 GB | TODO | TODO | [ ] |
-| gpt2 ewt pretrained first | 254,820 | 5.1 GB | TODO | TODO | [ ] |
-| gpt2 ewt pretrained last | 254,820 | 5.1 GB | TODO | TODO | [ ] |
-| gpt2 pud_en pretrained first / last | 21,180 | 2 x 0.42 GB | TODO | TODO | [ ] |
-| gpt2 ewt random first | 254,820 | 5.1 GB | TODO | TODO | [ ] |
+Measured on Nov 13 on an NVIDIA GTX 1650 Ti (4 GB), batch size 32. Time is the extraction loop summed over the splits
+(model loading adds a few seconds per split). Every run: 0 NaN rows, 0 truncated sentences.
 
-Total for E4: about 33 GB. Reference speed: a BERT-base-sized model on 2 CPU cores processes about 23 sentences/s
-(EWT train has 12,544 sentences, so about 9 minutes per split on CPU); a GPU is much faster.
+| Run | Rows | Disk | Time | `n_nan_rows` | Done |
+| :-- | --: | --: | --: | --: | :-- |
+| bert ewt pretrained first (train/dev/test) | 254,820 | 5.09 GB | 171 s | 0 | [x] |
+| bert pud_en pretrained first | 21,180 | 0.42 GB | 10 s | 0 | [x] |
+| bert ewt random first | 254,820 | 5.09 GB | 167 s | 0 | [x] |
+| distilbert ewt pretrained first | 254,820 | 2.74 GB | 87 s | 0 | [x] |
+| distilbert pud_en pretrained first | 21,180 | 0.23 GB | 5 s | 0 | [x] |
+| distilbert ewt random first | 254,820 | 2.74 GB | 90 s | 0 | [x] |
+| gpt2 ewt pretrained first | 254,820 | 5.09 GB | 145 s | 0 | [x] |
+| gpt2 ewt pretrained last | 254,820 | 5.09 GB | 148 s | 0 | [x] |
+| gpt2 pud_en pretrained first | 21,180 | 0.42 GB | 10 s | 0 | [x] |
+| gpt2 pud_en pretrained last | 21,180 | 0.42 GB | 10 s | 0 | [x] |
+| gpt2 ewt random first | 254,820 | 5.09 GB | 150 s | 0 | [x] |
+| Optional: bert / gpt2 ewt mean pooling | 254,820 | 5.09 GB each | about 150 s each | | [ ] |
+
+Total for E4: 25 folders, 32.4 GB, about 20 minutes of GPU time.
+Reference speed on the GTX 1650 Ti: about 100 sentences/s for BERT-base and GPT-2, about 190 sentences/s for DistilBERT
+(EWT train has 12,544 sentences). On 2 CPU cores a BERT-base-sized model reaches about 23 sentences/s.
 
 ## 5. Things to know when using the features
 
