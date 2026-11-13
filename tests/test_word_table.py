@@ -5,7 +5,6 @@ round-trip via table_to_sentences, and validation of invalid UPOS tags.
 """
 
 import pandas as pd
-import pytest
 
 import pytest
 
