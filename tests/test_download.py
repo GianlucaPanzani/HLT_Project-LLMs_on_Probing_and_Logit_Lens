@@ -2,7 +2,7 @@
 
 import sys
 from pathlib import Path
-
+pytest.importorskip("torch")
 # Add scripts/ so we can import the download module.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
