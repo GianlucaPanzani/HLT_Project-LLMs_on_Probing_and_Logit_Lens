@@ -1,0 +1,36 @@
+ud_release: r2.19
+
+# Probing datasets
+ewt:
+  repo: UniversalDependencies/UD_English-EWT
+  file_pattern: en_ewt-ud-{split}.conllu
+  lang: en
+  splits: [train, dev, test]
+  train_treebank: ewt
+
+isdt:
+  repo: UniversalDependencies/UD_Italian-ISDT
+  file_pattern: it_isdt-ud-{split}.conllu
+  lang: it
+  splits: [train, dev, test]
+  train_treebank: isdt
+
+pud_en:
+  repo: UniversalDependencies/UD_English-PUD
+  file_pattern: en_pud-ud-test.conllu
+  lang: en
+  splits: [test]
+  train_treebank: ewt
+
+pud_it:
+  repo: UniversalDependencies/UD_Italian-PUD
+  file_pattern: it_pud-ud-test.conllu
+  lang: it
+  splits: [test]
+  train_treebank: isdt
+
+# Logit lens dataset
+wikitext:
+  hf_dataset: Salesforce/wikitext
+  hf_config: wikitext-103-raw-v1
+  splits: [test]

@@ -9,6 +9,11 @@ from transformers import (
     AutoTokenizer,
 )
 
+UPOS_TAGS: tuple[str, ...] = (
+    "ADJ", "ADP", "ADV", "AUX", "CCONJ", "DET", "INTJ", "NOUN", "NUM",
+    "PART", "PRON", "PROPN", "PUNCT", "SCONJ", "SYM", "VERB", "X"
+)
+
 
 def load_ud(
     treebank_dir: str | Path,
