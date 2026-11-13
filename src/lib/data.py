@@ -75,7 +75,7 @@ def load_ud(
 
                 sent_id = sentence.metadata.get("sent_id", f"{files[0].stem}:{sentence_index}")
 
-                if any(word["upos"] in (None, "_") or word["form"] in (None, "_") for word in words):
+                if any(word["upos"] in (None, "_") or word["form"] in (None, "") for word in words):
                     raise ValueError(f"Missing word or UPOS annotation in {sent_id}.")
 
                 sentences.append({
