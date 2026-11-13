@@ -1,3 +1,15 @@
+PyYAML
+pytest
+ruff
+pandas
+numpy
+pyarrow
+scikit-learn
+datasets
+tuned-lens
+streamlit
+plotly
+matplotlib
 torch
 transformers
 conllu

@@ -1,0 +1,63 @@
+
+bert:
+  hf_id: bert-base-cased
+  kind: encoder
+  lang: en
+  num_layers: 12
+  hidden_size: 768
+  dtype: float32
+  revision: main
+
+distilbert:
+  hf_id: distilbert-base-cased
+  kind: encoder
+  lang: en
+  num_layers: 6
+  hidden_size: 768
+  dtype: float32
+  revision: main
+
+gpt2:
+  hf_id: gpt2
+  kind: decoder
+  lang: en
+  num_layers: 12
+  hidden_size: 768
+  dtype: float32
+  revision: main
+
+bert_it:
+  hf_id: dbmdz/bert-base-italian-cased
+  kind: encoder
+  lang: it
+  num_layers: 12
+  hidden_size: 768
+  dtype: float32
+  revision: main
+
+geppetto:
+  hf_id: LorenzoDeMattei/GePpeTto
+  kind: decoder
+  lang: it
+  num_layers: 12
+  hidden_size: 768
+  dtype: float32
+  revision: main
+
+mbert:
+  hf_id: bert-base-multilingual-cased
+  kind: encoder
+  lang: multi
+  num_layers: 12
+  hidden_size: 768
+  dtype: float32
+  revision: main
+
+mgpt:
+  hf_id: ai-forever/mGPT
+  kind: decoder
+  lang: multi
+  num_layers: 24
+  hidden_size: 2048
+  dtype: float16
+  revision: main
