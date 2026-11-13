@@ -7,6 +7,10 @@ round-trip via table_to_sentences, and validation of invalid UPOS tags.
 import pandas as pd
 import pytest
 
+import pytest
+
+pytest.importorskip("torch")
+
 from lib.word_table import build_word_table, table_to_sentences
 
 # ------------------------------------------------------------------ #
