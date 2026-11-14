@@ -165,19 +165,19 @@ def summarize_probing(results: pd.DataFrame) -> pd.DataFrame:
     # Case of missing columns in the input DataFrame
     missing = sorted(set(required) - set(results.columns))
     if missing:
-        raise ValueError(f"Missing some probing results columns: {missing}.")
+        raise ValueError(f"Missing probing results columns: {missing}.")
     
-    def validate_task_control(task_rows, control_rows, group_key):
+    def are_valid_task_control_rows(task_rows, control_rows, group_key) -> bool:
         if task_rows.empty:
-            return
+            return False
         if control_rows.empty:
             warnings.warn(f"Skipping upos in group {group_key}: missing control.", UserWarning, stacklevel=2)
-            return
+            return False
         if task_rows.duplicated(["layer", "seed"]).any() or control_rows.duplicated(["layer", "seed"]).any():
             raise ValueError(f"Duplicate layer/seed rows for upos in group {group_key}.")
-        return
+        return True
     
-    def validate_pairs(paired_rows, group_key, task, control):
+    def validate_pairs(paired_rows, group_key, task) -> None:
         # Case of an existing unmatch between task and control rows on seed and layer
         matched_rows = paired_rows["_merge"] == "both"
         if not matched_rows.all():
@@ -187,7 +187,7 @@ def summarize_probing(results: pd.DataFrame) -> pd.DataFrame:
             raise ValueError(f"Accuracies must be finite for {task} in group {group_key}.")
         return
     
-    def validate_means(means_rows, group_key, task, control):
+    def validate_means(means_rows, group_key, task) -> None:
         if not np.array_equal(means_rows.index.to_numpy(), np.arange(num_layers + 1)):
             raise ValueError(f"Expected all layers 0..{num_layers} for {task} in group {group_key}.")
         return
@@ -213,7 +213,8 @@ def summarize_probing(results: pd.DataFrame) -> pd.DataFrame:
             # Select the rows with that task, filtering on the columns: layer, seed and acc.
             task_rows = results_group.loc[results_group["task"] == task, ["layer", "seed", "acc"]]
             control_rows = results_group.loc[results_group["task"] == control, ["layer", "seed", "acc"]]
-            validate_task_control(task_rows, control_rows, group_key)
+            if not are_valid_task_control_rows(task_rows, control_rows, group_key):
+                continue
 
             # Merge together the the task rows with the control rows, having the same layer 
             # and the same seed, before averaging.
@@ -225,16 +226,16 @@ def summarize_probing(results: pd.DataFrame) -> pd.DataFrame:
                 indicator=True,
                 validate="one_to_one",
             )
-            validate_pairs(paired_rows, group_key, task, control)
+            validate_pairs(paired_rows, group_key, task)
 
             # Compute the average of the accuracy for each layer (and for each seed)
             means_rows = paired_rows.groupby("layer", sort=True)[["acc_task", "acc_control"]].mean()
-            validate_means(means_rows, group_key, task, control)
+            validate_means(means_rows, group_key, task)
 
             # Metrics
             sel = selectivity(means_rows["acc_task"].to_numpy(), means_rows["acc_control"].to_numpy())
-            peak_layer = peak_layer(sel)
-            peak_tau = relative_depth(peak_layer, num_layers)
+            sel_peak_layer = peak_layer(sel)
+            sel_peak_tau = relative_depth(sel_peak_layer, num_layers)
             cog = center_of_gravity(sel, normalize=False)
             cog_norm = center_of_gravity(sel)
 
@@ -245,9 +246,9 @@ def summarize_probing(results: pd.DataFrame) -> pd.DataFrame:
                 "L": int(num_layers),
                 "cog": cog,
                 "cog_norm": cog_norm,
-                "peak_layer": peak_layer,
-                "peak_tau": peak_tau,
-                "max_selectivity": float(sel[peak_layer]),
+                "peak_layer": sel_peak_layer,
+                "peak_tau": sel_peak_tau,
+                "max_selectivity": float(sel[sel_peak_layer]),
             })
 
     return pd.DataFrame(summarizing_rows, columns=columns)
