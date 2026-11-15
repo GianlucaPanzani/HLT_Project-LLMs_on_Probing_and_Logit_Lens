@@ -30,12 +30,12 @@ class LinearProbe(Probe):
         self.hparams: dict = {}
     
     def fit(
-            self,
-            X_train: np.ndarray,
-            y_train: np.ndarray,
-            X_dev: np.ndarray,
-            y_dev: np.ndarray,
-        ) -> "LinearProbe":
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_dev: np.ndarray,
+        y_dev: np.ndarray,
+    ) -> "LinearProbe":
         """
         Train candidates and select the highest dev accuracy.
 
@@ -77,8 +77,8 @@ class LinearProbe(Probe):
 
         return self
     
-    def predict(self, X) -> np.ndarray:
-        return self.best_estimator_.predict(X)
+    def predict(self, X_test) -> np.ndarray:
+        return self.best_estimator_.predict(X_test)
 
 
 class MLPProbe: ...      # __init__(self, hidden=256, lr=1e-3, weight_decay=0.0, batch_size=512, max_epochs=50, patience=5, seed=42, device=None)
