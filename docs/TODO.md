@@ -60,10 +60,10 @@ Why:
 ### Probes (Gianluca)
 | ID | Task | Owner | Due |
 | :-- | :-- | :-- | :-- |
-| P1 | Probing metrics in `src/lib/metrics.py` with tests | Gianluca | Nov 14 |
+| P1 | Probing metrics: `sel_acc`, Macro-F1 `sel_f1`, `sel_weighted`, unchanged accuracy-based CoG, with tests | Gianluca | Nov 14 |
 | P2 | Linear probe (scikit-learn, C chosen on dev) | Gianluca | Nov 16 |
 | P3 | MLP probe, early stopping (HW) | Gianluca | Nov 17 |
-| P4 | Probe runner: all layers, UPOS and control, pretrained, layer 0 and random baselines, writes CONTRACTS results (HW) | Gianluca | Nov 17 |
+| P4 | Probe runner: all layers, UPOS/control and baselines; dev/test scores, paired selectivity outputs and dev weighted selection per CONTRACTS (HW) | Gianluca | Nov 17 |
 | P5 | Next-token UPOS task (`upos_next`) | Gianluca | Nov 17 |
 | P6 | GPT-2 vs BERT comparison and plots | Gianluca | Nov 18 |
 
@@ -105,6 +105,30 @@ Why:
 | A4 | Tab 4 cross-linguistic dashboard | Arcangelo | Dec 3 |
 | R1 | Report and slides (sections by workstream) | All | Dec 3 |
 
+### P1 Macro-F1 extension: implementation and dependent tasks
+
+The revised schemas and interfaces in [CONTRACTS.md](CONTRACTS.md), sections 6, 7 and 10, are implementation targets. Document changes alone do not complete these tasks. Approve the contract update before integrating dependent code; retain the separate contract PR/review requirement.
+
+- **P1:** Implement Macro-F1 over all 17 tags (`zero_division=0`), `sel_f1`, `sel_weighted` with fixed `alpha=0.5` by default, and task/control pairing. Keep `selectivity(...)` compatible and all existing CoG/peak statistics based on `sel_acc`. Add explicit split filtering to `summarize_probing`.
+- **P2/P3:** Preserve the declared internal tuning/early-stopping criterion consistently for task and control (P2: dev accuracy). Supply predictions from the selected probes; weighted configuration selection belongs to P4 and must never choose a deliberately weaker control.
+- **D2/P4:** Add the documented paths for derived selectivity and selection records. Persist raw `acc`, `f1_macro`, class support and `eval_split`; save paired `sel_acc`, `sel_f1`, `sel_weighted` and `alpha`. Rank configurations on dev by averaging the same seeds and all layers `1..L`, preserving candidate order on ties. Require complete coverage/common evaluation rows and record candidates, scores and the chosen configuration before test evaluation.
+- **P5:** Apply the new outputs to `upos_next/control_next`, using identical valid-row masks for both tasks, including missing next-word targets.
+- **P6/C4:** Read the new split-aware results, compare all three selectivities and raw scores, and keep CoG and the BERT/DistilBERT 1:2 mapping unchanged.
+- **X2/X3/X4/X5:** Use the updated runner and regenerate evaluations where F1 is missing. Show tag supports and separate dataset/language comparisons; delta CoG remains based on `sel_acc`.
+- **L8:** Overlay each next-token selectivity with lens curves for the matching dataset and split; identify the metric and `alpha` explicitly.
+- **A2/A3/A4:** Add metric selection, display `alpha`, distinguish dev from test and handle unavailable legacy F1 values. CoG markers remain accuracy-based.
+- **R1:** Explain the Macro-F1 extension, fixed weighting, dev-only selection and remaining class-distribution limitations; report the raw component scores alongside selectivity and CoG.
+
+Feature extraction, control-label generation, CKA computation and lens metrics require no algorithmic change. Legacy accuracy-only results remain valid for `sel_acc`/CoG; F1 requires saved predictions/confusion matrices or reevaluation, never zero-filled placeholders.
+
+Acceptance checks for the extension:
+
+- [ ] Synthetic imbalanced data demonstrates different Macro-F1 values at equal accuracy; absent tags and all 17 labels follow the contract.
+- [ ] Formula tests cover negative selectivity, alpha endpoints/default, invalid weights/shapes/nonfinite scores, and preserve existing CoG results for identical accuracy inputs.
+- [ ] Pairing tests cover duplicate/missing rows, shared masks, split separation and legacy inputs; incomplete candidates cannot enter selection.
+- [ ] Runner tests verify that changing test results cannot change dev selection, and that result/selection artifacts preserve the required metrics and metadata.
+- [ ] Affected consumers and their tests use explicit metric names and splits; Ruff and offline tests pass.
+
 ## 3b. Who helps whom
 - Marcin's E4 can be split by model, so Filippo (after D2) runs DistilBERT and the random-init runs while Marcin runs BERT and GPT-2.
 - Gianluca's P3 and P4 are the longest probing tasks: Filippo (after C3) takes P3 or part of P4.
@@ -126,4 +150,4 @@ Why:
 ## 6. Decisions to make as a team
 - Where do large files (features, checkpoints) live? They are gitignored, so we need a shared drive.
 - First-subword or mean pooling for the main results? Default: first subword, mean as an ablation.
-- Negative selectivity in CoG: clip to zero (default) or leave as is.
+- Negative selectivity: preserve it in `sel_acc`, `sel_f1` and `sel_weighted`; keep the existing default clipping only for accuracy-based CoG. The function's optional unclipped mode remains available.

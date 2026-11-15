@@ -109,13 +109,14 @@ Built from the train split of `ewt` or `isdt` (Hewitt and Liang, 2019):
 - Control label for `upos_next`: the control label of the next word form in the same sentence (null for the last word).
 
 ## 6. Probing results (`results/probing/{model}__{train_treebank}__{probe}__{init}__{pooling}.parquet`)
-One row per (eval treebank, task, layer, seed).
+One row per (eval treebank, eval split, task, layer, seed). The P1 Macro-F1 extension below is the implementation target; updating this document does not implement the new fields or interfaces.
 
 | Column | Type | Note |
 | :-- | :-- | :-- |
 | `model` | str | registry key |
 | `train_treebank` | str | `ewt` or `isdt` |
-| `eval_treebank` | str | `ewt`, `isdt`, `pud_en` or `pud_it` (test split) |
+| `eval_treebank` | str | `ewt`, `isdt`, `pud_en` or `pud_it` |
+| `eval_split` | str | `dev` or `test`; PUD is test-only |
 | `lang` | str | language of the eval treebank |
 | `kind` | str | `encoder` or `decoder` |
 | `probe` | str | `linear` or `mlp` |
@@ -125,17 +126,45 @@ One row per (eval treebank, task, layer, seed).
 | `layer` | int | 0..L |
 | `L` | int | number of layers |
 | `tau` | float | `layer / L` |
-| `acc` | float | accuracy on the eval treebank test split |
+| `acc` | float | accuracy on the specified evaluation split |
+| `f1_macro` | float | Macro-F1 on the same evaluation rows as `acc` |
+| `class_support` | str | JSON list of 17 nonnegative gold-label counts in `UPOS_TAGS` order; sum equals `n_eval` |
 | `n_train` | int | number of training rows actually used |
 | `n_eval` | int | number of eval rows actually used |
 | `hparams` | str | JSON of the selected hyperparameters (for example `{"C": 1.0}`) |
 | `seed` | int | |
 
-Selectivity is not stored: compute it with `lib.metrics.selectivity` from the `upos`/`control` (or `upos_next`/`control_next`) rows.
+Compute Macro-F1 over the entire valid split with `average="macro"`, `labels=np.arange(17)`, `zero_division=0`; do not average batch F1 scores. A class absent from both labels and predictions contributes zero. Raw scores must be finite and in `[0, 1]`.
+
+### 6.1 Derived selectivity (`results/selectivity/{model}__{train_treebank}__{probe}__{init}__{pooling}.parquet`)
+One row per paired linguistic/control task, layer, seed and evaluation split. Retain `model, train_treebank, eval_treebank, eval_split, lang, kind, probe, init, pooling, task, layer, L, tau, seed, n_train, n_eval`. Here `task` is `upos` (paired with `control`) or `upos_next` (paired with `control_next`). Additional float columns:
+
+| Column | Definition |
+| :-- | :-- |
+| `acc_task`, `acc_control` | paired raw accuracies |
+| `f1_macro_task`, `f1_macro_control` | paired raw Macro-F1 scores |
+| `sel_acc` | `acc_task - acc_control` (existing selectivity) |
+| `sel_f1` | `f1_macro_task - f1_macro_control` |
+| `alpha` | finite weight in `[0, 1]`, default `0.5` |
+| `sel_weighted` | `alpha * sel_acc + (1 - alpha) * sel_f1` |
+
+- Preserve negative selectivity; all three scores are in `[-1, 1]`. Fix one `alpha` per comparison before evaluation and store it in every derived row. Regenerating the derived file with another weight replaces that file; do not mix weights in one comparison.
+- Pair on all experiment identifiers, evaluation split, layer and seed. Validate matching metadata and counts. The runner must use identical valid training/evaluation word rows for each task/control pair, including removal of null next-token labels. Counts alone do not prove row alignment.
+- Reject duplicate or unmatched layer/seed rows and nonfinite scores. An entirely missing control task skips that task pair with a warning, as in the existing summary. Such incomplete candidates cannot enter model selection.
+- Keep support and selected hyperparameters in the raw rows; the derived table does not duplicate rows for control tasks.
+
+### 6.2 Configuration selection and compatibility
+- A candidate is `(model, probe, init, pooling)`, compared at fixed train/eval treebank and linguistic task. Keep the existing internal tuning criteria of P2/P3, applied consistently to task and control. Never deliberately select a worse control probe to increase selectivity.
+- Rank candidates by mean dev `sel_weighted`: average over the same declared seeds at each layer, then over all layers `1..L` of each model. Require complete coverage and a common evaluation word set; layer 0 remains a baseline. Resolve ties using the declared candidate order. Never rank across different languages, datasets or tasks in one comparison.
+- Freeze the selected configuration before reporting test/PUD results. Test values must not affect selection or `alpha`. CoG describes depth and is not an objective to maximize or minimize.
+- Save `results/selection/{experiment}.json` with `train_treebank`, `eval_treebank`, `task`, `eval_split="dev"`, `alpha`, `seeds`, ordered `candidates` (configuration fields and `dev_score`), `selected_index`, `aggregation="mean_seeds_then_layers_1_to_L"`, and `tie_break="candidate_order"`. Each candidate also records the train-row cap and raw/derived result paths used. Use a distinct experiment name for a different comparison or weight.
+- Legacy raw files without `eval_split` are test-only. They remain usable for accuracy selectivity and CoG. Missing `f1_macro` or support cannot be recovered from accuracy; recompute from saved predictions/confusion matrices or rerun evaluation. Requests for F1/weighted outputs must fail clearly if these inputs are missing, rather than substituting zero.
 
 ## 7. Summary (`results/summary/cog.parquet`)
-Produced by `lib.metrics.summarize_probing` from all probing results. One row per (model, train_treebank, eval_treebank, probe, init, pooling, task pair).
-Columns: `model, train_treebank, eval_treebank, lang, probe, init, pooling, task` (`upos` or `upos_next`)`, L, cog, cog_norm, peak_layer, peak_tau, max_selectivity`.
+Produced by `lib.metrics.summarize_probing` from raw probing results, explicitly filtered by `eval_split` (default `test`). One row per (model, train_treebank, eval_treebank, eval_split, probe, init, pooling, task pair).
+Columns: `model, train_treebank, eval_treebank, eval_split, lang, probe, init, pooling, task` (`upos` or `upos_next`)`, L, cog, cog_norm, peak_layer, peak_tau, max_selectivity`.
+
+All existing statistics remain based on `sel_acc`. Pair task/control rows before averaging over seeds; compute CoG over layers `1..L`, clipping negative layer means to zero by default and returning NaN when their sum is zero. `peak_layer`, `peak_tau` and `max_selectivity` still include layer 0 and use unclipped `sel_acc`. No F1/weighted CoG is introduced. Identical accuracy inputs must produce identical existing statistics; never combine dev and test rows in one curve.
 
 ## 8. CKA (`results/cka/{model_a}__vs__{model_b}__{treebank}.parquet`)
 Long format, columns `layer_a, layer_b, cka, n_tokens, seed`. For `bert` vs `distilbert` on `ewt` test: 13 x 7 = 91 rows.
@@ -191,6 +220,8 @@ def control_path(train_treebank: str) -> Path
 def feature_dir(model: str, init: str, pooling: str, treebank: str, split: str) -> Path
 def layer_path(model: str, init: str, pooling: str, treebank: str, split: str, layer: int) -> Path
 def probing_result_path(model: str, train_treebank: str, probe: str, init: str, pooling: str) -> Path
+def selectivity_result_path(model: str, train_treebank: str, probe: str, init: str, pooling: str) -> Path  # section 6.1
+def probing_selection_path(experiment: str) -> Path                           # section 6.2
 def cka_result_path(model_a: str, model_b: str, treebank: str) -> Path
 def lens_result_path(model: str, dataset: str, per_token: bool = False) -> Path
 ```
@@ -228,12 +259,17 @@ def load_control(train_treebank: str) -> dict
 ### `lib/metrics.py` (P1, Gianluca)
 ```python
 def selectivity(acc_task: np.ndarray, acc_control: np.ndarray) -> np.ndarray
+def macro_f1(y_true: np.ndarray, y_pred: np.ndarray) -> float                  # fixed 17 labels, zero_division=0
+def selectivity_f1(f1_task: np.ndarray, f1_control: np.ndarray) -> np.ndarray
+def weighted_selectivity(sel_acc: np.ndarray, sel_f1: np.ndarray, *, alpha: float = 0.5) -> np.ndarray
+def compute_selectivities(results: pd.DataFrame, *, alpha: float = 0.5) -> pd.DataFrame  # section 6.1
 def relative_depth(layer: int | np.ndarray, num_layers: int) -> float | np.ndarray
 def center_of_gravity(sel: np.ndarray, *, normalize: bool = True, clip_negative: bool = True) -> float
     # sel has L + 1 entries (layers 0..L); only layers 1..L are summed; returns nan if the clipped sum is 0
 def peak_layer(sel: np.ndarray) -> int
-def summarize_probing(results: pd.DataFrame) -> pd.DataFrame                    # section 7
+def summarize_probing(results: pd.DataFrame, *, eval_split: str = "test") -> pd.DataFrame  # section 7
 ```
+Preserve the existing `selectivity` interface and subtraction behavior. New metric functions reject incompatible shapes, nonfinite/out-of-range scores and invalid `alpha`; `macro_f1` requires nonempty, aligned 1D integer labels in `0..16`. Metric functions return values/frames without writing files.
 
 ### `ws1_probing/probes.py` (P2, P3, Gianluca)
 ```python
@@ -245,14 +281,16 @@ class LinearProbe: ...   # __init__(self, Cs=(0.01, 0.1, 1.0, 10.0), max_iter=10
 class MLPProbe: ...      # __init__(self, hidden=256, lr=1e-3, weight_decay=0.0, batch_size=512, max_epochs=50, patience=5, seed=42, device=None)
 ```
 Labels are integer class indices from `UPOS_TAGS`. Inputs are float32 arrays (cast from the float16 features).
+Internal tuning and early stopping use the same declared criterion for task and control; P2 retains dev accuracy for C selection. Weighted configuration selection requires both fitted probes and belongs to P4, not to a single probe's `fit` method.
 
 ### `ws1_probing/runner.py` (P4, P5, Gianluca)
 ```python
 def run_probing(model: str, train_treebank: str, *, probe: str, init: str, pooling: str,
                 tasks: tuple[str, ...] = ("upos", "control"), eval_treebanks: tuple[str, ...] | None = None,
-                layers: list[int] | None = None, max_train_rows: int | None = 50000, seed: int = 42) -> pd.DataFrame
+                layers: list[int] | None = None, max_train_rows: int | None = 50000, seed: int = 42,
+                eval_splits: tuple[str, ...] = ("dev", "test"), alpha: float = 0.5) -> pd.DataFrame
 ```
-Writes `probing_result_path(...)` and returns the same frame. `eval_treebanks=None` means the train treebank plus its PUD.
+Writes raw scores/support to `probing_result_path(...)`, writes available paired scores from `compute_selectivities` to `selectivity_result_path(...)`, and returns the raw frame. `eval_treebanks=None` means the train treebank plus its PUD. Write only existing splits (PUD has no dev); all probes are fitted on train and internally tuned on dev even when only test output is requested. Reject invalid split names. Partial-layer runs are allowed for exploration, but cannot enter the full-depth selection of section 6.2. P4 coordinates candidate runs and records dev selection before test evaluation; this single-configuration function does not rank candidates by itself.
 
 ### `ws2_compression/cka.py` (C1, C2, C3, Filippo)
 ```python
@@ -285,6 +323,6 @@ def token_to_upos(token: str, lexicon: dict[str, str]) -> str
 
 ## 11. Conventions
 - Seed 42 everywhere unless a task says otherwise; always stored in outputs.
-- Test split for reported numbers, dev for hyperparameters, train for fitting. Never tune on test or PUD.
+- Test split for reported numbers, dev for hyperparameters and weighted configuration selection, train for fitting. Never tune on test or PUD. Result consumers must filter `eval_split`, name the selected selectivity field explicitly, and show `alpha` when using `sel_weighted`.
 - Every output is reproducible from `configs/` plus a script in `scripts/`. Scripts take `--model`, `--treebank` and similar flags and print where they wrote files.
 - Plots go to `results/figures/{workstream}/{name}.png` (and `.html` for plotly).

@@ -72,13 +72,14 @@ All pretrained language models must be loaded via Hugging Face `transformers` wi
 4. **Causal vs. Bidirectional Comparison (`gpt2` vs. `bert-base-cased`):**
    * Compare how UPOS information emerges across layers when attending only to preceding context (`gpt2`) versus bidirectional left+right context (`bert-base-cased`).
    * Evaluate both current-token UPOS ($y_t$) and next-token UPOS ($y_{t+1}$) decodability to prepare the bridge with the Logit Lens.
+   * Report accuracy and Macro-F1 for both task and control, plus `sel_acc`, `sel_f1` and `sel_weighted` (section 5.1). Keep each probe's internal tuning criterion consistent between task and control. Select configurations by mean dev `sel_weighted` over seeds and layers `1..L`, with a fixed weight; freeze the choice before test/PUD evaluation. CoG remains a depth descriptor based on `sel_acc`. See CONTRACTS.md sections 6–7 for pairing, selection records and legacy results.
 
 ---
 
 ### Workstream 2: Model Compression & Linguistic Hierarchy (1 Person)
 1. **Models Compared:** `bert-base-cased` ($L=12$) vs. `distilbert-base-cased` ($L=6$).
 2. **Rigid 1:2 Layer Mapping:**
-   * Compare DistilBERT layers $\{0, 1, 2, 3, 4, 5, 6\}$ directly against BERT even layers $\{0, 2, 4, 6, 8, 10, 12\}$ in terms of UPOS Accuracy, Selectivity, and Center of Gravity ($\text{CoG}_{\text{norm}}$).
+   * Compare DistilBERT layers $\{0, 1, 2, 3, 4, 5, 6\}$ directly against BERT even layers $\{0, 2, 4, 6, 8, 10, 12\}$ in terms of UPOS accuracy, Macro-F1, all three selectivity measures, and Center of Gravity ($\text{CoG}_{\text{norm}}$, based on `sel_acc`).
 3. **Empirical Geometric Validation via Centered Kernel Alignment (CKA):**
    * Because knowledge distillation transfers the output function rather than intermediate geometry, test whether DistilBERT Layer $l$ actually corresponds to BERT Layer $2l$.
    * Extract representation matrices $X \in \mathbb{R}^{N \times d}$ (BERT layer $i$) and $Y \in \mathbb{R}^{N \times d}$ (DistilBERT layer $j$) over $N$ aligned tokens from the test set.
@@ -93,7 +94,7 @@ All pretrained language models must be loaded via Hugging Face `transformers` wi
 2. **Paradigm A — Single Multilingual Model (`bert-base-multilingual-cased` & `ai-forever/mGPT`):**
    * Probe the exact same frozen network on English (`UD_English-EWT` / `UD_English-PUD`) and Italian (`UD_Italian-ISDT` / `UD_Italian-PUD`).
    * **Handling `mGPT` Scale Discrepancy:** Because `mGPT` has $L=24$ layers and hidden size $d=2048$ (vs. $L=12, d=768$ in `gpt2` and `GePpeTto`), raw probing accuracy curves cannot be compared directly due to Cover's theorem (higher dimensionality inflates linear separability).
-   * Apply the three mandatory normalization metrics: **Relative Layer Depth ($\tau$)**, **Normalized Center of Gravity ($\text{CoG}_{\text{norm}}$)**, and **Probing Selectivity ($S^{(l)}$)**.
+   * Report **Relative Layer Depth ($\tau$)**, **Normalized Center of Gravity ($\text{CoG}_{\text{norm}}$, based on `sel_acc`)**, and **Probing Selectivity (`sel_acc`, `sel_f1`, `sel_weighted`)**. Show per-tag support and raw task/control scores; Macro-F1 does not remove differences in label distributions between languages or controls. Select configurations within each dataset/task, rather than ranking English and Italian scores together.
    * *Memory Optimization Note:* Run `mGPT` (1.3B parameters) in `torch.float16` or `torch.bfloat16` during feature extraction.
 3. **Paradigm B — Paired Monolingual Models:**
    * Encoders: `bert-base-cased` (EN) vs. `dbmdz/bert-base-italian-cased` (IT).
@@ -114,7 +115,7 @@ All pretrained language models must be loaded via Hugging Face `transformers` wi
 4. **Lens 3 — Jacobian Lens (First-Order Analysis, Gurnee et al. 2026):**
    * Evaluate local sensitivity and non-linear feature dynamics across layers without training external parameters by computing first-order Taylor approximations / Jacobian-vector products ($J^{(l)} = \frac{\partial \text{logits}_t^{(L)}}{\partial h_t^{(l)}}$) using `torch.autograd`.
 5. **Integration with Probing (The Comparative Bridge):**
-   * Overlay the layer-wise Probing Selectivity curve (for next-token grammatical category $\text{UPOS}_{t+1}$) against the Lens trajectories (Top-1 Accuracy, Shannon Entropy $H$, and KL Divergence $D_{\text{KL}}$).
+   * Overlay each layer-wise Probing Selectivity curve (`sel_acc`, `sel_f1`, `sel_weighted`, for next-token grammatical category $\text{UPOS}_{t+1}$) against the Lens trajectories (Top-1 Accuracy, Shannon Entropy $H$, and KL Divergence $D_{\text{KL}}$). Match evaluation datasets/splits and label the selected metric and weight explicitly.
    * Map the top-1 predicted vocabulary token $\hat{w}_{t+1}^{(l)}$ from each lens to its grammatical UPOS category to test whether the model commits to the correct syntactic category in earlier layers before converging on the exact surface word in late layers.
 
 ---
@@ -122,9 +123,11 @@ All pretrained language models must be loaded via Hugging Face `transformers` wi
 ### Workstream 5: Interactive Streamlit Demo (Final Phase: Nov 26 – Dec 3)
 Build an interactive **Streamlit** application (`app.py`) showcasing all experimental results:
 * **Tab 1 — Token-by-Token Lens Heatmap:** Input custom English or Italian sentences and visualize a 2D heatmap (Layers $0 \dots L$ on Y-axis, Tokens on X-axis) displaying the top-1 predicted word at each layer across Standard Logit Lens, Tuned Lens, and Jacobian Lens, colored by Shannon Entropy $H(P_t^{(l)})$ or KL Divergence.
-* **Tab 2 — Probing Curves & Baselines Explorer:** Interactive line charts comparing $\text{Acc}_{\text{UPOS}}^{(l)}$, $\text{Acc}_{\text{control}}^{(l)}$, Random Weights, Layer 0 Lookup, and Selectivity $S^{(l)}$ across models and probe types (Linear vs. MLP).
-* **Tab 3 — Compression & CKA Explorer:** Interactive CKA heatmap between `BERT` and `DistilBERT` alongside 1:2 mapped selectivity curves.
-* **Tab 4 — Cross-Linguistic Dashboard:** Side-by-side comparison of English vs. Italian trajectories on `mBERT`, `mGPT`, and Paired Monolingual models over Relative Layer Depth $\tau \in [0, 1]$ with $\text{CoG}_{\text{norm}}$ markers.
+* **Tab 2 — Probing Curves & Baselines Explorer:** Interactive line charts comparing task/control accuracy and Macro-F1, Random Weights, Layer 0 Lookup, and selectable `sel_acc`, `sel_f1`, `sel_weighted` across models and probe types (Linear vs. MLP).
+* **Tab 3 — Compression & CKA Explorer:** Interactive CKA heatmap between `BERT` and `DistilBERT` alongside 1:2 mapped curves for each selectivity measure.
+* **Tab 4 — Cross-Linguistic Dashboard:** Side-by-side comparison of English vs. Italian selectivity trajectories on `mBERT`, `mGPT`, and Paired Monolingual models over Relative Layer Depth $\tau \in [0, 1]$ with $\text{CoG}_{\text{norm}}$ markers based on `sel_acc`.
+
+Tabs 2–4 must distinguish dev selection from test reporting, display `alpha` for weighted scores, and mark unavailable legacy F1 metrics explicitly.
 
 ---
 
@@ -133,12 +136,20 @@ Build an interactive **Streamlit** application (`app.py`) showcasing all experim
 All evaluation modules must implement the following exact formulations:
 
 ### 5.1 Probing-Only Metrics
-* **Probing Selectivity (per language $\mathcal{L}$ and layer $l$):**
+* **Accuracy Selectivity (`sel_acc`, per language $\mathcal{L}$ and layer $l$):**
   $$S_{\mathcal{L}}^{(l)} = \text{Acc}_{\text{UPOS}, \mathcal{L}}^{(l)} - \text{Acc}_{\text{control}, \mathcal{L}}^{(l)}$$
+* **Macro-F1 and F1 Selectivity (`sel_f1`):**
+  $$\text{Macro-F1} = \frac{1}{17}\sum_{k=0}^{16}\frac{2TP_k}{2TP_k + FP_k + FN_k}, \qquad S_{\text{F1}}^{(l)} = \text{Macro-F1}_{\text{task}}^{(l)} - \text{Macro-F1}_{\text{control}}^{(l)}$$
+  A zero denominator contributes zero. Use all 17 tags in registry order and compute scores over the full valid evaluation split. Macro-F1 gives equal weight to each tag, complementing accuracy on imbalanced labels; micro-F1 equals accuracy here, while weighted-F1 still emphasizes frequent tags. Record class support alongside raw scores.
+* **Weighted Selectivity (`sel_weighted`, project extension):**
+  $$S_{\text{weighted}}^{(l)} = \alpha S_{\mathcal{L}}^{(l)} + (1-\alpha)S_{\text{F1}}^{(l)}, \qquad \alpha \in [0,1]$$
+  Default `alpha=0.5`, fixed before comparison and shared across candidates. Preserve negative values in all three selectivities. Compare configurations using the mean dev weighted score across the declared seeds and all layers `1..L`; retain declared candidate order on ties. This extension does not replace the accuracy-based definition of CoG or remove task/control distribution differences.
 * **Unnormalized Center of Gravity (CoG):**
   $$\text{CoG} = \frac{\sum_{l=1}^{L} l \cdot \text{Selectivity}^{(l)}}{\sum_{l=1}^{L} \text{Selectivity}^{(l)}}$$
 * **Normalized Center of Gravity ($\text{CoG}_{\text{norm}}$):**
   $$\text{CoG}_{\text{norm}} = \frac{1}{L} \frac{\sum_{l=1}^{L} l \cdot \text{Selectivity}^{(l)}}{\sum_{l=1}^{L} \text{Selectivity}^{(l)}} \in [0, 1]$$
+
+  In both CoG formulas, `Selectivity` remains `sel_acc` averaged over paired seeds, with negative layer means clipped to zero by default as specified in CONTRACTS.md. Layer 0 is excluded; a zero denominator returns NaN. The formulas and existing peak statistics are unchanged. CoG describes where information is concentrated and is not a score to maximize or minimize.
 
 ### 5.2 Logit Lens-Only Metrics
 * **Shannon Entropy (Vocabulary Uncertainty at layer $l$):**
