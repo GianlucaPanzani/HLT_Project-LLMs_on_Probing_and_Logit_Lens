@@ -68,28 +68,114 @@ def test_training_and_prediction(synthetic_splits: dict) -> None:
         np.testing.assert_array_equal(y, original_splits[split][1])
 
 
-def test_all_upos_classes() -> None:
-    """Train and predict all 17 contracted class indices on synthetic features.
+@pytest.mark.parametrize("classes", [
+    np.arange(17),
+    np.array([tag for tag in range(17) if tag not in (6, 9)]),
+    np.array([0, 7, 16]),
+    np.array([7, 16]),
+], ids=["all_tags", "without_intj_part", "nonconsecutive_tags", "two_tags_without_zero"])
+def test_present_upos_classes(classes: np.ndarray) -> None:
+    """Learn present tags without renumbering them or requiring all 17 classes.
+
+    Parameters
+    ----------
+    classes : np.ndarray
+        Global UPOS indices present in the synthetic dataset.
 
     Returns
     -------
     None
-        Every class must be recognized on independent development and test data.
+        Predictions preserve global indices and perfect accuracy is one even
+        when some tags are absent from the dataset.
     """
     rng = np.random.default_rng(42)
     centers = 4.0 * np.eye(17, dtype=np.float32)
     splits = []
     for n_per_class in (8, 2, 2):
-        y = np.repeat(np.arange(17), n_per_class)
+        y = np.repeat(classes, n_per_class)
         X = centers[y] + rng.normal(0.0, 0.1, size=(len(y), 17))
         splits.append((X.astype(np.float32), y))
     (X_train, y_train), (X_dev, y_dev), (X_test, y_test) = splits
 
     probe = LinearProbe(Cs=(1.0,)).fit(X_train, y_train, X_dev, y_dev)
 
-    np.testing.assert_array_equal(probe.best_estimator_.classes_, np.arange(17))
+    np.testing.assert_array_equal(probe.best_estimator_.classes_, classes)
     np.testing.assert_array_equal(probe.predict(X_dev), y_dev)
     np.testing.assert_array_equal(probe.predict(X_test), y_test)
+    assert probe.best_estimator_.score(X_dev, y_dev) == 1.0
+    assert probe.best_estimator_.score(X_test, y_test) == 1.0
+
+
+@pytest.mark.parametrize("y_dev,expected_accuracy", [
+    (np.array([0, 16, 7]), 2 / 3),
+    (np.array([7, 7, 7]), 0.0),
+], ids=["one_unseen_tag", "only_unseen_tag"])
+def test_unseen_dev_tags_are_counted_as_errors(
+    monkeypatch: pytest.MonkeyPatch, y_dev: np.ndarray, expected_accuracy: float,
+) -> None:
+    """Keep unseen dev tags in every candidate's accuracy calculation.
+
+    Parameters
+    ----------
+    monkeypatch : pytest.MonkeyPatch
+        Records calls to the real classifier score method without replacing
+        training or the accuracy calculation.
+    y_dev : np.ndarray
+        Valid global labels including tag 7, absent from training.
+    expected_accuracy : float
+        Accuracy over all three development words.
+
+    Returns
+    -------
+    None
+        Each candidate scores all dev rows and retains only training classes.
+    """
+    X_train = np.array([[-2.0], [-1.0], [1.0], [2.0]], dtype=np.float32)
+    y_train = np.array([0, 0, 16, 16])
+    X_dev = np.array([[-3.0], [3.0], [0.0]], dtype=np.float32)
+    original_y_dev = y_dev.copy()
+    original_score = LogisticRegression.score
+    evaluations = []
+
+    def record_score(model, X, y):
+        accuracy = original_score(model, X, y)
+        evaluations.append((X.copy(), y.copy(), accuracy))
+        return accuracy
+
+    monkeypatch.setattr(LogisticRegression, "score", record_score)
+    probe = LinearProbe(Cs=(0.1, 1.0)).fit(X_train, y_train, X_dev, y_dev)
+
+    assert len(evaluations) == 2
+    for evaluated_X, evaluated_y, accuracy in evaluations:
+        np.testing.assert_array_equal(evaluated_X, X_dev)
+        np.testing.assert_array_equal(evaluated_y, original_y_dev)
+        assert accuracy == pytest.approx(expected_accuracy)
+    predictions = probe.predict(X_dev)
+    assert predictions.shape == y_dev.shape
+    assert np.mean(predictions == y_dev) == pytest.approx(expected_accuracy)
+    np.testing.assert_array_equal(probe.best_estimator_.classes_, [0, 16])
+    np.testing.assert_array_equal(y_dev, original_y_dev)
+
+
+@pytest.mark.parametrize("tag", [0, 7, 16])
+def test_single_training_class_is_rejected(regularization_data: tuple, tag: int) -> None:
+    """Require at least two training classes, even when dev has other tags.
+
+    Parameters
+    ----------
+    regularization_data : tuple
+        Valid features and development labels.
+    tag : int
+        The sole training tag, still within the valid global range.
+
+    Returns
+    -------
+    None
+        A one-class training set must raise ValueError.
+    """
+    X_train, y_train, X_dev, y_dev = regularization_data
+    with pytest.raises(ValueError, match="at least 2 classes"):
+        LinearProbe(Cs=(1.0,)).fit(X_train, np.full_like(y_train, tag), X_dev, y_dev)
 
 
 @pytest.mark.parametrize("constant_dev_labels,expected_C", [(False, 100.0), (True, 0.001)])
@@ -192,7 +278,7 @@ def test_predict_before_fit() -> None:
 
 @pytest.mark.parametrize("problem", [
     "nan_train", "inf_dev", "label_count", "dev_label_count", "feature_count",
-    "one_class", "empty_train", "empty_dev",
+    "empty_train", "empty_dev",
 ])
 def test_invalid_training_data(regularization_data: tuple, problem: str) -> None:
     """Reject unusable data instead of silently dropping or misaligning rows."""
@@ -207,8 +293,6 @@ def test_invalid_training_data(regularization_data: tuple, problem: str) -> None
         y_dev = y_dev[:-1]
     elif problem == "feature_count":
         X_dev = np.zeros((len(y_dev), 2))
-    elif problem == "one_class":
-        y_train = np.zeros_like(y_train)
     elif problem == "empty_train":
         X_train, y_train = X_train[:0], y_train[:0]
     elif problem == "empty_dev":
