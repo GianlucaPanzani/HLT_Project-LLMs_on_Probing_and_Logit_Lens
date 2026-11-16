@@ -1,8 +1,10 @@
+import warnings
 from typing import Protocol
 
 import numpy as np
-from sklearn.exceptions import NotFittedError
+from sklearn.exceptions import ConvergenceWarning, NotFittedError
 from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
 
 
 class Probe(Protocol):
@@ -50,7 +52,7 @@ class LinearProbe(Probe):
         self.seed = seed
         self.hparams: dict = {}
     
-    def _validate_fit_inputs(
+    def _validate_inputs(
         self,
         X_train: np.ndarray,
         y_train: np.ndarray,
@@ -110,10 +112,14 @@ class LinearProbe(Probe):
         LinearProbe
             This probe, containing the selected classifier.
         """
-        self._validate_fit_inputs(X_train, y_train, X_dev, y_dev)
+        self._validate_inputs(X_train, y_train, X_dev, y_dev)
 
         X_train = np.asarray(X_train, dtype=np.float32)
         X_dev = np.asarray(X_dev, dtype=np.float32)
+        
+        self.scaler = StandardScaler()
+        X_train_scaled = self.scaler.fit_transform(X_train)
+        X_dev_scaled = self.scaler.transform(X_dev)
 
         best_acc = -1.0
         best_estimator = None
@@ -124,18 +130,28 @@ class LinearProbe(Probe):
                 max_iter=self.max_iter,
                 random_state=self.seed,
             )
-            model.fit(X_train, y_train)
-            dev_acc = model.score(X_dev, y_dev)
+            with warnings.catch_warnings(record=True) as captured:
+                warnings.simplefilter("always", ConvergenceWarning)
+                model.fit(X_train_scaled, y_train)
+            dev_acc = model.score(X_dev_scaled, y_dev)
 
             # Store the best model
             if dev_acc > best_acc:
                 best_estimator = model
+                best_captured_warnings = captured
                 best_acc = dev_acc
 
         if best_estimator is None:
             raise ValueError("No valid model was trained. Check your training data.")
         self.best_estimator_ = best_estimator
-        self.hparams = {"C": float(best_estimator.C)}
+
+        convergence_warnings = [
+            str(w.message) for w in best_captured_warnings
+            if issubclass(w.category, ConvergenceWarning)
+        ]
+        converged = not convergence_warnings
+
+        self.hparams = {"C": float(best_estimator.C), "converged": converged}
         return self
 
     def predict(self, X: np.ndarray) -> np.ndarray:
@@ -152,9 +168,13 @@ class LinearProbe(Probe):
         np.ndarray
             One predicted class index per sample.
         """
-        if not hasattr(self, "best_estimator_") or self.best_estimator_ is None:
+        if not hasattr(self, "best_estimator_") or self.best_estimator_ is None or self.scaler is None:
             raise NotFittedError("LinearProbe must be fitted before calling predict.")
-        return self.best_estimator_.predict(np.asarray(X, dtype=np.float32))
+        
+        X = np.asarray(X, dtype=np.float32)
+
+        X_scaled = self.scaler.transform(X)
+        return self.best_estimator_.predict(np.asarray(X_scaled, dtype=np.float32))
 
 
 class MLPProbe(Probe): ...  # P3: to be implement separately.

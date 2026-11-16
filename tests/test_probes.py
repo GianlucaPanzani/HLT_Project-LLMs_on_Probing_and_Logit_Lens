@@ -1,9 +1,16 @@
-"""Exercise linear probes with small, reproducible synthetic datasets."""
+"""Check P2 requirements with small synthetic datasets.
+
+Run the separate fit benchmark with:
+PYTHONPATH=src python -m pytest -q -s tests/tests_probing_fit_benchmark.py
+"""
+
+import warnings
 
 import numpy as np
 import pytest
-from sklearn.exceptions import NotFittedError
+from sklearn.exceptions import ConvergenceWarning, NotFittedError
 from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
 
 from ws1_probing.probes import LinearProbe
 
@@ -102,8 +109,8 @@ def test_present_upos_classes(classes: np.ndarray) -> None:
     np.testing.assert_array_equal(probe.best_estimator_.classes_, classes)
     np.testing.assert_array_equal(probe.predict(X_dev), y_dev)
     np.testing.assert_array_equal(probe.predict(X_test), y_test)
-    assert probe.best_estimator_.score(X_dev, y_dev) == 1.0
-    assert probe.best_estimator_.score(X_test, y_test) == 1.0
+    assert np.mean(probe.predict(X_dev) == y_dev) == 1.0
+    assert np.mean(probe.predict(X_test) == y_test) == 1.0
 
 
 @pytest.mark.parametrize("y_dev,expected_accuracy", [
@@ -134,6 +141,7 @@ def test_unseen_dev_tags_are_counted_as_errors(
     y_train = np.array([0, 0, 16, 16])
     X_dev = np.array([[-3.0], [3.0], [0.0]], dtype=np.float32)
     original_y_dev = y_dev.copy()
+    expected_dev = StandardScaler().fit(X_train).transform(X_dev)
     original_score = LogisticRegression.score
     evaluations = []
 
@@ -147,7 +155,7 @@ def test_unseen_dev_tags_are_counted_as_errors(
 
     assert len(evaluations) == 2
     for evaluated_X, evaluated_y, accuracy in evaluations:
-        np.testing.assert_array_equal(evaluated_X, X_dev)
+        np.testing.assert_allclose(evaluated_X, expected_dev)
         np.testing.assert_array_equal(evaluated_y, original_y_dev)
         assert accuracy == pytest.approx(expected_accuracy)
     predictions = probe.predict(X_dev)
@@ -190,13 +198,13 @@ def test_C_is_selected_using_dev_accuracy(
     probe = LinearProbe(Cs=Cs)
     probe.fit(X_train, y_train, X_dev, y_dev)
 
-    assert probe.hparams == {"C": expected_C}
+    assert probe.hparams == {"C": expected_C, "converged": True}
     assert probe.best_estimator_.C == expected_C
     assert np.mean(probe.predict(X_dev) == y_dev) == 1.0
 
     # The selected classifier must still be trained only on training examples.
     reference = LogisticRegression(C=expected_C, solver="lbfgs", max_iter=1000, random_state=42)
-    reference.fit(X_train, y_train)
+    reference.fit(StandardScaler().fit_transform(X_train), y_train)
     np.testing.assert_allclose(probe.best_estimator_.coef_, reference.coef_)
     np.testing.assert_allclose(probe.best_estimator_.intercept_, reference.intercept_)
 
@@ -213,7 +221,7 @@ def test_tied_accuracy_keeps_first_candidate(synthetic_splits: dict, Cs: tuple[f
     probe = LinearProbe(Cs=Cs)
     probe.fit(X_train, y_train, X_dev, y_dev)
 
-    assert probe.hparams == {"C": Cs[0]}
+    assert probe.hparams["C"] == Cs[0]
 
 
 @pytest.mark.parametrize("Cs", [(1.0,), (10.0,), (1.0, 10.0)])
@@ -226,7 +234,7 @@ def test_zero_dev_accuracy_still_selects_a_model(Cs: tuple[float, ...]) -> None:
     probe = LinearProbe(Cs=Cs)
     probe.fit(X_train, y_train, X_dev, y_dev)
 
-    assert probe.hparams == {"C": Cs[0]}
+    assert probe.hparams["C"] == Cs[0]
     assert np.mean(probe.predict(X_dev) == y_dev) == 0.0
 
 
@@ -235,10 +243,10 @@ def test_refit_replaces_previous_selection(regularization_data: tuple) -> None:
     X_train, y_train, X_dev, y_dev = regularization_data
     probe = LinearProbe(Cs=(100.0, 0.001))
     probe.fit(X_train, y_train, X_dev, y_dev)
-    assert probe.hparams == {"C": 100.0}
+    assert probe.hparams["C"] == 100.0
 
     probe.fit(X_train, y_train, X_dev, np.zeros_like(y_dev))
-    assert probe.hparams == {"C": 0.001}
+    assert probe.hparams["C"] == 0.001
     np.testing.assert_array_equal(probe.predict(X_dev), np.zeros_like(y_dev))
 
 
@@ -252,6 +260,139 @@ def test_reproducible_training(synthetic_splits: dict) -> None:
     assert first.hparams == second.hparams
     np.testing.assert_allclose(first.best_estimator_.coef_, second.best_estimator_.coef_)
     np.testing.assert_array_equal(first.predict(X_dev), second.predict(X_dev))
+
+
+def test_scaler_fits_train_only_and_transforms_predictions(
+    synthetic_splits: dict, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify train-only scaling and reuse of the fitted transform at prediction.
+
+    Parameters
+    ----------
+    synthetic_splits : dict
+        Independent synthetic training, development and test samples.
+    monkeypatch : pytest.MonkeyPatch
+        Records the real StandardScaler.fit calls.
+
+    Returns
+    -------
+    None
+        Scaling must use only training data and match a reference classifier.
+    """
+    X_train, y_train = synthetic_splits["train"]
+    X_dev, y_dev = synthetic_splits["dev"]
+    X_test, _ = synthetic_splits["test"]
+    scale = np.array([0.1, 100.0], dtype=np.float32)
+    offset = np.array([10.0, -200.0], dtype=np.float32)
+    X_train = X_train.astype(np.float32) * scale + offset
+    X_dev = X_dev.astype(np.float32) * scale + offset + scale * 2
+    X_test = X_test.astype(np.float32) * scale + offset - scale
+
+    reference_scaler = StandardScaler().fit(X_train)
+    reference_model = LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000, random_state=42)
+    reference_model.fit(reference_scaler.transform(X_train), y_train)
+    original_fit = StandardScaler.fit
+    fitted_inputs = []
+
+    def record_fit(scaler, X, y=None, **kwargs):
+        fitted_inputs.append(np.asarray(X).copy())
+        return original_fit(scaler, X, y, **kwargs)
+
+    monkeypatch.setattr(StandardScaler, "fit", record_fit)
+    probe = LinearProbe(Cs=(1.0,)).fit(X_train, y_train, X_dev, y_dev)
+    assert fitted_inputs, "fit must learn a StandardScaler from the training features."
+    for fitted_X in fitted_inputs:
+        np.testing.assert_array_equal(fitted_X, X_train)
+    fit_count = len(fitted_inputs)
+    for X in (X_dev, X_test):
+        np.testing.assert_array_equal(probe.predict(X), reference_model.predict(reference_scaler.transform(X)))
+    assert len(fitted_inputs) == fit_count, "predict must reuse the scaler without fitting again."
+    np.testing.assert_allclose(probe.best_estimator_.coef_, reference_model.coef_)
+    np.testing.assert_allclose(probe.best_estimator_.intercept_, reference_model.intercept_)
+
+
+def test_shuffled_labels_do_not_generalize() -> None:
+    """Check the issue's majority-rate bound on independent shuffled-label data.
+
+    Returns
+    -------
+    None
+        Test accuracy must not exceed the majority-class rate plus 0.05.
+    """
+    rng = np.random.default_rng(42)
+    splits = []
+    centers = 4.0 * np.eye(3, dtype=np.float32)
+    for n_per_class in (300, 200, 1000):
+        groups = np.repeat(np.arange(3), n_per_class)
+        X = centers[groups] + rng.normal(0.0, 0.3, size=(len(groups), 3))
+        # Shuffle independently in each split to remove the feature/label relation.
+        y = rng.permutation(np.array([0, 7, 16])[groups])
+        splits.append((X.astype(np.float32), y))
+    (X_train, y_train), (X_dev, y_dev), (X_test, y_test) = splits
+    probe = LinearProbe().fit(X_train, y_train, X_dev, y_dev)
+    test_accuracy = np.mean(probe.predict(X_test) == y_test)
+    majority_rate = np.bincount(y_test, minlength=17).max() / len(y_test)
+    assert test_accuracy <= majority_rate + 0.05
+
+
+def test_nonconvergence_is_recorded_without_warning(synthetic_splits: dict) -> None:
+    """Record a real iteration-limit warning in the selected hyperparameters.
+
+    Parameters
+    ----------
+    synthetic_splits : dict
+        Separable multiclass data that needs more than one optimizer iteration.
+
+    Returns
+    -------
+    None
+        A fitted but unconverged classifier is usable and its warning is captured.
+    """
+    X_train, y_train = synthetic_splits["train"]
+    X_dev, y_dev = synthetic_splits["dev"]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        probe = LinearProbe(Cs=(1.0,), max_iter=1).fit(X_train, y_train, X_dev, y_dev)
+    assert probe.hparams.get("converged") is False
+    assert not any(issubclass(warning.category, ConvergenceWarning) for warning in caught)
+    assert probe.predict(X_dev).shape == y_dev.shape
+
+
+@pytest.mark.parametrize("warning_C", [0.001, 100.0])
+def test_convergence_status_belongs_to_selected_candidate(
+    regularization_data: tuple, monkeypatch: pytest.MonkeyPatch, warning_C: float,
+) -> None:
+    """Keep convergence metadata for the winner, including when it is not last.
+
+    Parameters
+    ----------
+    regularization_data : tuple
+        Data where C=100 has strictly better development accuracy.
+    monkeypatch : pytest.MonkeyPatch
+        Adds a controlled warning after real classifier training.
+    warning_C : float
+        Candidate that emits a ConvergenceWarning.
+
+    Returns
+    -------
+    None
+        The selected candidate determines the flag and warnings do not escape.
+    """
+    X_train, y_train, X_dev, y_dev = regularization_data
+    original_fit = LogisticRegression.fit
+
+    def fit_with_warning(model, X, y, **kwargs):
+        result = original_fit(model, X, y, **kwargs)
+        if model.C == warning_C:
+            warnings.warn("Controlled convergence warning for the test.", ConvergenceWarning, stacklevel=2)
+        return result
+
+    monkeypatch.setattr(LogisticRegression, "fit", fit_with_warning)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        probe = LinearProbe(Cs=(100.0, 0.001)).fit(X_train, y_train, X_dev, y_dev)
+    assert probe.hparams == {"C": 100.0, "converged": warning_C != 100.0}
+    assert not any(issubclass(warning.category, ConvergenceWarning) for warning in caught)
 
 
 @pytest.mark.parametrize("Cs", [
