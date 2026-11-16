@@ -49,22 +49,35 @@ class TunedLensTranslators(nn.Module):
             nn.init.zeros_(linear.weight)
             nn.init.zeros_(linear.bias)
 
-    def forward(self, layer_idx: int, h: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        arg1: torch.Tensor | int,
+        arg2: torch.Tensor | int,
+    ) -> torch.Tensor:
         """Apply translator for a given layer index.
+
+        Supports both `forward(h, layer_idx)` (CONTRACTS.md Section 10)
+        and `forward(layer_idx, h)`.
 
         Parameters
         ----------
-        layer_idx : int
-            Layer index. If layer_idx >= num_layers (e.g. final layer L),
-            the input hidden state is returned unchanged (identity).
-        h : torch.Tensor
-            Hidden state tensor of shape [..., hidden_size].
+        arg1 : torch.Tensor | int
+            Hidden state tensor `h` [..., hidden_size] or `layer_idx`.
+        arg2 : torch.Tensor | int
+            `layer_idx` or hidden state tensor `h` [..., hidden_size].
 
         Returns
         -------
         torch.Tensor
             Translated hidden state tensor of shape [..., hidden_size].
         """
+        if isinstance(arg1, torch.Tensor):
+            h = arg1
+            layer_idx = int(arg2)
+        else:
+            layer_idx = int(arg1)
+            h = arg2
+
         if layer_idx < self.num_layers:
             return h + self.translators[layer_idx](h)
         return h
