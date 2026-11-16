@@ -1,0 +1,20 @@
+# Configuration for Workstream 4: Tuned Lens Training (Issue L4)
+# Follows CONTRACTS.md Sections 9.2, 9.5, and 10
+
+model: geppetto
+treebank: isdt
+train_split: train
+dev_split: dev
+
+training:
+  batch_size: 8
+  max_length: 128
+  lr: 1.0e-3
+  weight_decay: 1.0e-3
+  epochs: 3
+  seed: 42
+  log_interval: 50
+  empty_cache_interval: 50
+
+output:
+  checkpoint_dir: checkpoints/tuned_lens
