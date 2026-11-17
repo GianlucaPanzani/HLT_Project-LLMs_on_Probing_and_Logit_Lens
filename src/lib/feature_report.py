@@ -5,7 +5,8 @@ table that is pasted in the issue: rows, size on disk, time, NaN rows, truncated
 It only reads files; it never loads a model.
 """
 
-from lib.features import load_meta
+import json
+
 from lib.paths import feature_dir
 from lib.registry import get_treebank_spec
 
@@ -84,12 +85,12 @@ def report_runs(
             for split in get_treebank_spec(treebank)["splits"]:
                 row = dict.fromkeys(COLUMNS)
                 row["run"] = f"{model} {treebank}/{split} {pooling}"
-                try:
-                    meta = load_meta(model, "pretrained", pooling, treebank, split)
-                except FileNotFoundError:
+                meta_path = feature_dir(model, "pretrained", pooling, treebank, split) / "meta.json"
+                if not meta_path.is_file():  # an incomplete folder has no meta.json
                     row["status"] = "missing"
                     report.append(row)
                     continue
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
                 allowed_cap = model == "mgpt" and split == "train"
                 capped = meta.get("max_rows") is not None
                 row.update(
