@@ -38,6 +38,11 @@ Expected control mapping sizes (UD r2.19, measured): `ewt` 19,674 word types (20
 - **Shared storage (all 25 English folders, 32.4 GB):** 
   Google Drive folder `features` with the same structure as `features/` here, plus a `README.txt`.
   Download only the folders you need into `features/` (same structure), or anywhere else and set `HLT_FEATURES_DIR`.
+- **Hugging Face (private dataset `hlt-group11/features`):** the same feature folders at the repository root (`{model}/{init}/{pooling}/{treebank}_{split}/`),
+  plus the word tables in `data/processed/`. It can also be read in bounded batches without downloading it, see [REMOTE_FEATURES.md](REMOTE_FEATURES.md).
+  **When you upload features for a new treebank, upload its word table too** (`data/processed/{treebank}_{split}.parquet`), from the same build used for the
+  extraction: its number of rows must equal `n_rows` of every `meta.json`, otherwise streaming refuses to read it. Upload only folders that have a `meta.json`.
+  Use a token with write access only for the upload and keep it out of files, commands in the repository and logs.
 
 ## 4. Time and disk (E4, measured)
 
