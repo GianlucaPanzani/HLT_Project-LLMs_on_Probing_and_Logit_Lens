@@ -1,5 +1,11 @@
 """Workstream 4: Decoder Lens Spectrum & Probing Integration."""
 
+from ws4_lens.jacobian_lens import (
+    estimate_jacobians,
+    jacobian_lens,
+    load_jacobian_checkpoint,
+    save_jacobian_checkpoint,
+)
 from ws4_lens.logit_lens import logit_lens, run_model
 from ws4_lens.metrics import entropy, kl_to_final, top1_accuracy
 from ws4_lens.tuned_lens import (
@@ -25,4 +31,8 @@ __all__ = [
     "train_tuned_lens",
     "save_tuned_lens_checkpoint",
     "load_tuned_lens_checkpoint",
+    "estimate_jacobians",
+    "jacobian_lens",
+    "save_jacobian_checkpoint",
+    "load_jacobian_checkpoint",
 ]
