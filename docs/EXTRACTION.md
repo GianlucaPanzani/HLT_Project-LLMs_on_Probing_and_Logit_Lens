@@ -142,6 +142,7 @@ PYTHONPATH=src python scripts/01_extract_features.py --model mgpt --treebank pud
 Run a few steps, upload the folders to the shared storage (section 3), delete them locally and continue. Upload a folder only when it has a `meta.json`
 (an incomplete folder cannot be read). Do not delete anything before the upload is checked: the report below can be run again from the shared copy by setting `HLT_FEATURES_DIR`.
 Give the shared copy the same structure as `features/`.
+For the Hugging Face repository `hlt-group11/features`, also upload the word tables of the treebanks you add (`data/processed/{treebank}_{split}.parquet`; `isdt` and `pud_it` are already there): see section 3 once the streaming PR is merged.
 
 ### 5.5 Report
 
