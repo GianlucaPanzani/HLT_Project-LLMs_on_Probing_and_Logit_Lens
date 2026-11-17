@@ -21,11 +21,15 @@ A `.npy` file is a header followed by raw float16 rows, so the row range `[a, b)
    a branch name is resolved once to its commit, and that commit is used for the features, the word table and `meta.json`,
    so a result can be reproduced. The CLI prints the resolved commit.
 
-Layout expected in the repository (the same as locally, see CONTRACTS.md 4.1):
+Layout of the repository `hlt-group11/features` (dataset, private; see CONTRACTS.md 4.1):
 
-    features/{model}/{init}/{pooling}/{treebank}_{split}/layer_{l:02d}.npy
-    features/{model}/{init}/{pooling}/{treebank}_{split}/meta.json
-    data/processed/{treebank}_{split}.parquet
+    {model}/{init}/{pooling}/{treebank}_{split}/layer_{l:02d}.npy
+    {model}/{init}/{pooling}/{treebank}_{split}/meta.json
+    data/processed/{treebank}_{split}.parquet        # the word tables
+
+The feature folders are at the root (the content of `features/`); use `features_prefix` / `--features-prefix` if a copy keeps them under a folder.
+The word tables were copied from `data/processed/` after checking that their row counts equal `n_rows` of all 25 `meta.json` files.
+When the Italian or multilingual features are uploaded, upload the matching word tables too (they are already there for `isdt` and `pud_it`).
 
 ## 3. Use
 
@@ -33,7 +37,7 @@ Layout expected in the repository (the same as locally, see CONTRACTS.md 4.1):
 from lib.remote_features import iter_remote_feature_batches
 
 for batch in iter_remote_feature_batches(
-    "team/features", "gpt2", "pretrained", "first", "ewt", "train", 6,
+    "hlt-group11/features", "gpt2", "pretrained", "first", "ewt", "train", 6,
     revision="<commit hash>", batch_size=512,
 ):
     batch.rows       # int64 [B], indices in the word table
@@ -52,7 +56,7 @@ for batch in iter_remote_feature_batches(
 Command line (reads the batches one by one and keeps nothing):
 
 ```bash
-PYTHONPATH=src python scripts/05_stream_features.py --repo-id team/features --revision <commit> \
+PYTHONPATH=src python scripts/05_stream_features.py --repo-id hlt-group11/features --revision <commit> \
     --model gpt2 --treebank ewt --split test --layer 6 --start-row 0 --stop-row 2000 --batch-size 512
 ```
 
@@ -94,7 +98,7 @@ and the Hugging Face transport with a fake file system. No network and no creden
 One optional integration test reads 64 rows from a real private revision:
 
 ```bash
-HLT_HF_TEST_REPO=team/features HLT_HF_TEST_REVISION=<commit> PYTHONPATH=src pytest -q -m slow tests/test_remote_features.py -s
+HLT_HF_TEST_REPO=hlt-group11/features HLT_HF_TEST_REVISION=<commit> PYTHONPATH=src pytest -q -m slow tests/test_remote_features.py -s
 ```
 
 Paste the printed transferred bytes (and the peak memory of the CLI run above) in the PR or issue.

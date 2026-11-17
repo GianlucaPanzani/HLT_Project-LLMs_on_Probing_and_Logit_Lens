@@ -4,7 +4,7 @@ Reads the batches one by one and keeps nothing: it prints rows, shapes and the
 bytes transferred. See docs/REMOTE_FEATURES.md.
 
 Example:
-    PYTHONPATH=src python scripts/05_stream_features.py --repo-id team/features --revision main \
+    PYTHONPATH=src python scripts/05_stream_features.py --repo-id hlt-group11/features --revision main \
         --model gpt2 --treebank ewt --split test --layer 6 --start-row 0 --stop-row 2000
 """
 
@@ -34,6 +34,7 @@ def main() -> None:
     parser.add_argument("--repo-id", required=True, help="private Hugging Face repository, for example team/features")
     parser.add_argument("--revision", required=True, help="branch, tag or commit (resolved to a commit hash)")
     parser.add_argument("--repo-type", default="dataset", choices=["dataset", "model", "space"])
+    parser.add_argument("--features-prefix", default="", help="folder of the feature folders in the repository (default: root)")
     parser.add_argument("--model", required=True)
     parser.add_argument("--init", default="pretrained", choices=["pretrained", "random"])
     parser.add_argument("--pooling", default="first", choices=["first", "mean", "last"])
@@ -51,7 +52,7 @@ def main() -> None:
     batches = iter_remote_feature_batches(
         args.repo_id, args.model, args.init, args.pooling, args.treebank, args.split, args.layer,
         revision=args.revision, batch_size=args.batch_size, start_row=args.start_row, stop_row=args.stop_row,
-        repo_type=args.repo_type, source=source,
+        repo_type=args.repo_type, features_prefix=args.features_prefix, source=source,
     )
     n_batches = n_rows = n_nan_rows = 0
     for batch in batches:

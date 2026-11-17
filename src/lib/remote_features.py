@@ -391,6 +391,7 @@ def iter_remote_feature_batches(
     start_row: int = 0,
     stop_row: int | None = None,
     repo_type: str = "dataset",
+    features_prefix: str = "",
     max_retries: int = 3,
     retry_delay: float = 1.0,
     source: RangeSource | None = None,
@@ -420,6 +421,9 @@ def iter_remote_feature_batches(
         of feature rows (``meta["n_rows"]``). Defaults to the whole layer.
     repo_type : str
         ``"dataset"`` (default), ``"model"`` or ``"space"``.
+    features_prefix : str
+        Folder of the feature folders inside the repository. Defaults to ``""``
+        (the root, as in ``hlt-group11/features``).
     max_retries : int
         Retries of a failed read before giving up. Defaults to 3.
     retry_delay : float
@@ -452,7 +456,7 @@ def iter_remote_feature_batches(
         source = HfRangeSource(repo_id, revision, repo_type)
     retry = _make_retry(max_retries, retry_delay)
 
-    folder = f"features/{model}/{init}/{pooling}/{treebank}_{split}"
+    folder = "/".join(part for part in (features_prefix.strip("/"), f"{model}/{init}/{pooling}/{treebank}_{split}") if part)
     meta = _read_json(source, f"{folder}/meta.json", retry)
     _validate(
         meta,

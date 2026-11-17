@@ -18,7 +18,7 @@ from lib.remote_features import (
 )
 
 N_ROWS, D, N_LAYERS = 23, 4, 2
-FOLDER = "features/fake/pretrained/first/ewt_train"
+FOLDER = "fake/pretrained/first/ewt_train"
 LAYER_FILE = f"{FOLDER}/layer_01.npy"
 TABLE_FILE = "data/processed/ewt_train.parquet"
 ROW_BYTES = D * 2
@@ -274,6 +274,15 @@ def test_stream_is_lazy_and_reads_batch_by_batch(local):
     assert len([r for r in source.reads if r[0] == LAYER_FILE]) == after_first + 1
 
 
+def test_features_prefix_selects_a_folder_of_the_repository(local):
+    files, layers, *_ = local
+    nested = {(f"features/{k}" if k != TABLE_FILE else k): v for k, v in files.items()}
+    rows, features, _ = _collect(_stream(MemorySource(nested), features_prefix="features/"))
+    np.testing.assert_array_equal(features, layers[1])
+    with pytest.raises(FileNotFoundError):
+        _stream(MemorySource(nested))  # default prefix: the root has no such folder
+
+
 def test_retries_do_not_duplicate_or_skip_rows(local):
     files, layers, reference, _ = local
     probe = MemorySource(files)
@@ -394,7 +403,7 @@ def test_integration_small_range_from_private_repository():
     repo, revision = os.environ.get("HLT_HF_TEST_REPO"), os.environ.get("HLT_HF_TEST_REVISION")
     if not repo or not revision:
         pytest.skip("HLT_HF_TEST_REPO and HLT_HF_TEST_REVISION are not set")
-    model = os.environ.get("HLT_HF_TEST_MODEL", "bert")
+    model = os.environ.get("HLT_HF_TEST_MODEL", "gpt2")
     treebank = os.environ.get("HLT_HF_TEST_TREEBANK", "ewt")
     source = HfRangeSource(repo, revision)
     batches = list(iter_remote_feature_batches(
