@@ -17,6 +17,7 @@ from ws4_lens.tuned_lens import (
     train_tuned_lens,
     tuned_lens,
 )
+from ws4_lens.upos_bridge import build_upos_lexicon, token_to_upos
 
 __all__ = [
     "run_model",
@@ -35,4 +36,6 @@ __all__ = [
     "jacobian_lens",
     "save_jacobian_checkpoint",
     "load_jacobian_checkpoint",
+    "build_upos_lexicon",
+    "token_to_upos",
 ]
