@@ -12,7 +12,11 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from lib.features import load_layer, load_meta
+try:
+    from lib.features import load_layer, load_meta
+except ImportError:
+    load_layer = None  # type: ignore[assignment]
+    load_meta = None  # type: ignore[assignment]
 
 
 def linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
@@ -161,6 +165,19 @@ def cka_matrix(
         ``n_tokens``, ``seed`` (CONTRACTS.md §8).
     """
     init = "pretrained"
+
+    global load_layer, load_meta
+    if load_layer is None or load_meta is None:
+        try:
+            from lib.features import load_layer as _load_l
+            from lib.features import load_meta as _load_m
+
+            load_layer = _load_l
+            load_meta = _load_m
+        except ImportError as err:
+            raise ImportError(
+                "cka_matrix requires lib.features (and torch), which are not available in this environment."
+            ) from err
 
     meta_a = load_meta(model_a, init, pooling, treebank, split)
     meta_b = load_meta(model_b, init, pooling, treebank, split)
