@@ -1,12 +1,12 @@
+import os
 import numpy as np
 import pandas as pd
 
 from lib.control_tasks import control_labels, load_control
 from lib.data import UPOS_TAGS
 from lib.registry import get_model_spec, get_treebank_spec
-from lib.features import load_layer, load_meta
-from lib.word_table import load_word_table
-from probes import LinearProbe, MLPProbe
+from lib.remote_features import HfRangeSource, iter_remote_feature_batches
+from ws1_probing.probes import LinearProbe, MLPProbe
 
 
 def _prepare_split(
@@ -17,25 +17,42 @@ def _prepare_split(
     split: str,
     tasks: tuple[str, ...],
     control: dict | None,
+    *,
+    source: HfRangeSource
 ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     """Return valid row positions and aligned integer labels."""
-    table = load_word_table(treebank, split)
-    meta = load_meta(model, init, pooling, treebank, split)
-    features = load_layer(model, init, pooling, treebank, split, 0)
+    table_parts = []
+    row_parts = []
+    valid_parts = []
 
-    if features.ndim != 2 or len(features) != len(table):
-        raise ValueError(f"Features and word table do not align for {treebank}/{split}.")
+    # Pick the batches from HF
+    batches = iter_remote_feature_batches(
+        repo_id=source.repo_id,
+        model=model,
+        init=init,
+        pooling=pooling,
+        treebank=treebank,
+        split=split,
+        layer=0,
+        revision=source.revision,
+        source=source,
+    )
+    for batch in batches:
+        table_parts.append(batch.table)
+        row_parts.append(batch.rows)
+        valid_parts.append(~np.isnan(batch.features).any(axis=1))
 
-    # Capped extractions cover the first max_rows word-table rows.
-    max_rows = meta.get("max_rows")
-    if max_rows is not None:
-        table = table.iloc[:max_rows]
+    if not row_parts:
+        raise ValueError(f"No feature rows for {treebank}/{split}.")
+
+    table = pd.concat(table_parts)
+    original_rows = np.concatenate(row_parts)
+    valid = np.concatenate(valid_parts)
 
     tag_to_id = {tag: index for index, tag in enumerate(UPOS_TAGS)}
-    valid = ~np.isnan(features).any(axis=1)
     encoded_labels = {}
-
     for task in tasks:
+        # Get the labels based on the type of task
         if task == "upos":
             labels = table["upos"]
         elif task == "control":
@@ -45,6 +62,7 @@ def _prepare_split(
         else:
             raise ValueError(f"Unsupported task: {task!r}.")
 
+        # Check of unknown labels
         unknown = labels.notna() & ~labels.isin(UPOS_TAGS)
         if unknown.any():
             raise ValueError(f"Unknown labels for {task} in {treebank}/{split}.")
@@ -52,15 +70,15 @@ def _prepare_split(
         valid &= labels.notna().to_numpy()
         encoded_labels[task] = labels.map(tag_to_id)
 
-    rows = np.flatnonzero(valid)
-    if rows.size == 0:
+    positions = np.flatnonzero(valid)
+    if positions.size == 0:
         raise ValueError(f"No valid rows for {treebank}/{split}.")
 
     targets = {
-        task: labels.iloc[rows].to_numpy(dtype=np.int64)
+        task: labels.iloc[positions].to_numpy(dtype=np.int64)
         for task, labels in encoded_labels.items()
     }
-    return rows, targets
+    return original_rows[positions], targets
 
 
 def run_probing(
@@ -115,10 +133,26 @@ def run_probing(
     if seed < 0:
         raise ValueError("seed should be positive or zero.")
     
+    # Get the HuggingFace repository info from environment variables
+    repo_id = os.environ.get("HLT_HF_REPO", "hlt-group11/features")
+    revision = os.environ.get("HLT_HF_REVISION")
+    if not revision:
+        raise ValueError("Set HLT_HF_REVISION to the feature repository commit.")
+    hf_source = HfRangeSource(repo_id, revision)
+    
     control = load_control(train_treebank) if "control" in tasks else None
     
     # Build training data
-    train_rows, y_train = _prepare_split(model, init, pooling, train_treebank, "train", tasks, control)
+    train_rows, y_train = _prepare_split(
+        model,
+        init,
+        pooling,
+        train_treebank,
+        "train",
+        tasks,
+        control,
+        source=hf_source
+    )
     if max_train_rows is not None and len(train_rows) > max_train_rows:
         rng = np.random.default_rng(seed)
         positions = rng.choice(
@@ -127,13 +161,19 @@ def run_probing(
             replace=False,
         )
         train_rows = train_rows[positions]
-        y_train = {
-            task: labels[positions]
-            for task, labels in y_train.items()
-        }
+        y_train = {task: labels[positions] for task, labels in y_train.items()}
     
     # Build development data
-    dev_rows, y_dev = _prepare_split(model, init, pooling, dev_treebank, "dev", tasks, control)
+    dev_rows, y_dev = _prepare_split(
+        model,
+        init,
+        pooling,
+        train_treebank,
+        "train",
+        tasks,
+        control,
+        source=hf_source
+    )
     if max_train_rows is not None and len(train_rows) > max_train_rows:
         rng = np.random.default_rng(seed)
         positions = rng.choice(
@@ -142,13 +182,19 @@ def run_probing(
             replace=False,
         )
         train_rows = train_rows[positions]
-        y_train = {
-            task: labels[positions]
-            for task, labels in y_train.items()
-        }
+        y_train = {task: labels[positions] for task, labels in y_train.items()}
     
     # Build testing data
-    test_rows, y_test = _prepare_split(model, init, pooling, test_treebank, "test", tasks, control)
+    test_rows, y_test = _prepare_split(
+        model,
+        init,
+        pooling,
+        train_treebank,
+        "train",
+        tasks,
+        control,
+        source=hf_source
+    )
     if max_train_rows is not None and len(train_rows) > max_train_rows:
         rng = np.random.default_rng(seed)
         positions = rng.choice(
@@ -157,9 +203,6 @@ def run_probing(
             replace=False,
         )
         train_rows = train_rows[positions]
-        y_train = {
-            task: labels[positions]
-            for task, labels in y_train.items()
-        }
+        y_train = {task: labels[positions] for task, labels in y_train.items()}
 
     return
