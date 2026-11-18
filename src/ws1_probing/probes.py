@@ -2,10 +2,10 @@ import warnings
 from typing import Protocol
 
 import numpy as np
+import torch
 from sklearn.exceptions import ConvergenceWarning, NotFittedError
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
-import torch
 
 
 class Probe(Protocol):
