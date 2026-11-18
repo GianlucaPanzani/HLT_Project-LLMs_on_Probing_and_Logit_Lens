@@ -23,22 +23,27 @@ class LinearProbe(Probe):
         max_iter: int = 1000,
         seed: int = 42,
     ) -> None:
-        """
-        Configure the probe without training a classifier.
+        """Configure regularization candidates without fitting a classifier.
 
         Parameters
         ----------
         Cs : tuple[float, ...]
-            Positive, finite regularization candidates, evaluated in this order.
+            Positive, finite inverse regularization strengths, evaluated in order.
         max_iter : int
             Positive maximum number of optimization iterations per candidate.
         seed : int
-            Random state passed to the classifier.
+            Random state passed to each logistic regression classifier.
 
         Returns
         -------
         None
-            The probe is configured and must be fitted before prediction.
+            The probe is configured with an empty hparams dictionary.
+
+        Raises
+        ------
+        ValueError
+            If Cs is empty or contains nonpositive or nonfinite values, or
+            max_iter is not a positive integer.
         """
         if len(Cs) == 0:
             raise ValueError("Cs must contain at least one candidate value.")
@@ -58,13 +63,25 @@ class LinearProbe(Probe):
         X_dev: np.ndarray,
         y_dev: np.ndarray,
     ) -> None:
-        """
-        Validate the input shapes and types for the fit method.
+        """Validate feature dimensions, sample counts and UPOS label types.
+
+        Parameters
+        ----------
+        X_train, X_dev : np.ndarray
+            Training and development feature arrays, each two-dimensional.
+        y_train, y_dev : np.ndarray
+            One-dimensional integer label arrays aligned with their feature rows.
+
+        Returns
+        -------
+        None
+            Inputs are checked without modifying them.
 
         Raises
         ------
         ValueError
-            If any of the inputs are not 2D arrays or if the number of samples does not match.
+            If array dimensions or sample counts are invalid, or labels are not
+            integers in the inclusive range [0, 16].
         """
         if X_train.ndim != 2 or X_dev.ndim != 2:
             raise ValueError("X_train and X_dev must be 2D arrays.")
@@ -88,28 +105,38 @@ class LinearProbe(Probe):
         X_dev: np.ndarray,
         y_dev: np.ndarray,
     ) -> "LinearProbe":
-        """
-        Train candidates on training data and select the highest dev accuracy.
+        """Fit linear classifiers and select the highest development accuracy.
 
-        Ties keep the first candidate in Cs. The selected model is not retrained
-        on the development set. Missing feature rows must be removed together
-        with their labels before calling this method.
+        Features are cast to float32 and standardised using training statistics
+        only. Each candidate is fitted with the lbfgs solver. Ties keep the first
+        candidate in Cs; the winner is not refitted on train plus dev. Remove
+        missing feature rows together with their labels before calling fit.
 
         Parameters
         ----------
         X_train : np.ndarray
-            Training features, with shape (n_train, hidden_size).
+            Finite training features of shape (n_train, d).
         y_train : np.ndarray
-            Integer training labels, with shape (n_train,).
+            Integer UPOS indices in [0, 16], of shape (n_train,). At least two
+            distinct training classes are required.
         X_dev : np.ndarray
-            Development features, with shape (n_dev, hidden_size).
+            Finite development features of shape (n_dev, d).
         y_dev : np.ndarray
-            Integer development labels, with shape (n_dev,).
+            Integer UPOS indices in [0, 16], of shape (n_dev,). Tags absent from
+            training remain in the development accuracy calculation.
 
         Returns
         -------
         LinearProbe
-            This probe, containing the selected classifier.
+            This probe with its fitted scaler and selected classifier. hparams
+            stores C and converged for the winner; converged is false if that
+            candidate emitted a captured ConvergenceWarning.
+
+        Raises
+        ------
+        ValueError
+            If features or labels are invalid, splits are empty, feature dimensions
+            differ, training has fewer than two classes, or no model is selected.
         """
         self._validate_inputs(X_train, y_train, X_dev, y_dev)
 
@@ -153,18 +180,25 @@ class LinearProbe(Probe):
         return self
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        """
-        Predict integer class labels using the selected classifier.
+        """Predict UPOS indices using the selected classifier and training scaler.
 
         Parameters
         ----------
         X : np.ndarray
-            Features with shape (n_samples, hidden_size).
+            Nonempty, finite features of shape (n_samples, d), with the same
+            feature dimension as training. Values are cast to float32.
 
         Returns
         -------
         np.ndarray
-            One predicted class index per sample.
+            Integer UPOS predictions of shape (n_samples,), in input row order.
+
+        Raises
+        ------
+        NotFittedError
+            If no fitted classifier is available.
+        ValueError
+            If features are empty, nonfinite or have incompatible dimensions.
         """
         if not hasattr(self, "best_estimator_") or self.best_estimator_ is None or self.scaler is None:
             raise NotFittedError("LinearProbe must be fitted before calling predict.")
@@ -189,22 +223,38 @@ class MLPProbe(Probe):
         seed: int = 42,
         device: str | None = None,
     ) -> None:
-        """
-        Configure the probe without training a classifier.
+        """Configure a single-hidden-layer probe without building its network.
 
         Parameters
         ----------
         hidden : int
-            Number of neurons in the hidden layer.
+            Positive number of hidden neurons, independent of input dimension d.
+        lr : float
+            Positive learning rate passed to the optimizer.
+        weight_decay : float
+            Nonnegative weight decay passed to the optimizer.
+        batch_size : int
+            Positive maximum number of samples per training or prediction batch.
         max_epochs : int
-            Positive maximum number of optimization iterations.
+            Positive maximum number of complete passes over the training data.
+        patience : int
+            Positive number of consecutive epochs without a strictly higher
+            development accuracy before stopping. Tied accuracy is not improvement.
         seed : int
-            Random state passed to the classifier.
+            Positive seed for network initialization and the batch shuffle generator.
+        device : str or None
+            PyTorch device identifier. None selects CUDA, then MPS, then CPU,
+            according to availability when fit is called.
 
         Returns
         -------
         None
-            The probe is configured and must be fitted before prediction.
+            The probe is configured with an empty hparams dictionary and no network.
+
+        Raises
+        ------
+        ValueError
+            If a numeric parameter fails its type or value check.
         """
         
         if not (isinstance(hidden, (int, np.integer)) and hidden > 0):
@@ -240,13 +290,25 @@ class MLPProbe(Probe):
         X_dev: np.ndarray,
         y_dev: np.ndarray,
     ) -> None:
-        """
-        Validate the input shapes and types for the fit method.
+        """Validate feature dimensions, sample counts and UPOS label types.
+
+        Parameters
+        ----------
+        X_train, X_dev : np.ndarray
+            Training and development feature arrays, each two-dimensional.
+        y_train, y_dev : np.ndarray
+            One-dimensional integer label arrays aligned with their feature rows.
+
+        Returns
+        -------
+        None
+            Inputs are checked without modifying them.
 
         Raises
         ------
         ValueError
-            If any of the inputs are not 2D arrays or if the number of samples does not match.
+            If array dimensions or sample counts are invalid, or labels are not
+            integers in the inclusive range [0, 16].
         """
         if X_train.ndim != 2 or X_dev.ndim != 2:
             raise ValueError("X_train and X_dev must be 2D arrays.")
@@ -264,17 +326,26 @@ class MLPProbe(Probe):
                 raise ValueError("y_train and y_dev must contain integer labels in range [0,16].")
     
     def _predict_scaled(self, X_scaled: np.ndarray) -> np.ndarray:
-        """Predict from standardised features in batches.
+        """Predict from already standardised features without fitting or scaling.
+
+        The network is placed in evaluation mode and gradients are disabled.
+        Only the current batch is transferred to the selected device.
 
         Parameters
         ----------
         X_scaled : np.ndarray
-            Standardised float32 features of shape (n_samples, d).
+            Standardised float32 features of shape (n_samples, d), using the
+            fitted training scaler. The caller validates the input.
 
         Returns
         -------
         np.ndarray
-            Integer predictions on CPU, in input row order.
+            CPU int64 UPOS predictions of shape (n_samples,), in input row order.
+
+        Raises
+        ------
+        NotFittedError
+            If the network has not been initialized.
         """
         if self.model_ is None:
             raise NotFittedError("MLPProbe must be fitted before calling predict.")
@@ -298,24 +369,44 @@ class MLPProbe(Probe):
         X_dev: np.ndarray,
         y_dev: np.ndarray,
     ) -> "MLPProbe":
-        """
-        Train the MLP probe on training data.
+        """Train the network and restore the weights with best development accuracy.
+
+        Features are cast to float32 and standardised with training statistics
+        only. Train a Linear(d, hidden) -> ReLU -> Linear(hidden, 17) network
+        with cross-entropy and seeded shuffled mini-batches. Full feature arrays
+        stay on CPU; only individual batches move to the selected device.
+
+        Evaluate development accuracy after every epoch. Save an independent
+        copy of the best weights and stop after patience consecutive epochs
+        without strict improvement, or at max_epochs. Restore the first best
+        checkpoint and leave the network in evaluation mode.
 
         Parameters
         ----------
         X_train : np.ndarray
-            Training features, with shape (n_train, hidden).
+            Training features of shape (n_train, d). Supply nonempty, finite
+            features; remove missing rows together with their labels beforehand.
         y_train : np.ndarray
-            Integer training labels, with shape (n_train,).
+            Integer UPOS indices in [0, 16], of shape (n_train,).
         X_dev : np.ndarray
-            Development features, with shape (n_dev, hidden).
+            Nonempty, finite development features of shape (n_dev, d).
         y_dev : np.ndarray
-            Integer development labels, with shape (n_dev,).
+            Integer UPOS indices in [0, 16], of shape (n_dev,).
 
         Returns
         -------
         MLPProbe
-            This probe, containing the trained classifier.
+            This probe with its fitted scaler and best network weights. hparams
+            records hidden, lr, weight_decay, batch_size, max_epochs, patience,
+            seed and the resolved device, plus epochs_trained and best_dev_acc.
+            epochs_trained counts all completed epochs, including those after
+            the best checkpoint; best_dev_acc belongs to the restored weights.
+
+        Raises
+        ------
+        ValueError
+            If input dimensions, label types or label ranges are invalid,
+            preprocessing rejects the features, or no checkpoint is selected.
         """
         X_train = np.asarray(X_train, dtype=np.float32)
         X_dev = np.asarray(X_dev, dtype=np.float32)
@@ -346,7 +437,7 @@ class MLPProbe(Probe):
             torch.nn.Linear(self.hidden, 17),
         ).to(self.device_)
 
-        optimizer = torch.optim.Adam(
+        optimizer = torch.optim.AdamW(
             self.model_.parameters(),
             lr=self.lr,
             weight_decay=self.weight_decay
@@ -421,18 +512,28 @@ class MLPProbe(Probe):
         return self
     
     def predict(self, X: np.ndarray) -> np.ndarray:
-        """
-        Predict integer class labels using the trained MLP classifier.
+        """Predict UPOS indices with the restored network in mini-batches.
+
+        Cast features to float32 and apply the fitted training scaler once.
+        Inference uses evaluation mode without gradients; outputs return to CPU.
 
         Parameters
         ----------
         X : np.ndarray
-            Features with shape (n_samples, hidden_size).
+            Nonempty, finite features of shape (n_samples, d), with the same
+            feature dimension as training.
 
         Returns
         -------
         np.ndarray
-            One integer class index per sample.
+            CPU int64 UPOS predictions of shape (n_samples,), in input row order.
+
+        Raises
+        ------
+        NotFittedError
+            If training has not completed successfully.
+        ValueError
+            If features are empty, nonfinite or have incompatible dimensions.
         """
         if not self.hparams or self.model_ is None or self.scaler is None:
             raise NotFittedError("MLPProbe must be fitted before calling predict.")
