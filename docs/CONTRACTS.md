@@ -94,6 +94,18 @@ Pooling needed per model (minimum set):
 
 `mean` pooling for bert and gpt2 on ewt is a nice-to-have ablation.
 
+### 4.1 Remote copy on Hugging Face (optional, read-only)
+The team may keep a copy of the features in a **private Hugging Face dataset repository**, read with `lib.remote_features` (section 10). The repository `hlt-group11/features` (dataset) holds the same files as the local folders, so no file is converted:
+
+- `{model}/{init}/{pooling}/{treebank}_{split}/layer_{l:02d}.npy` and `meta.json` at the **root** of the repository, exactly as the content of `features/` in section 4 (a `features_prefix` argument handles a repository that keeps them under a folder such as `features/`);
+- `data/processed/{treebank}_{split}.parquet`, the word tables of section 2 (copied from the local `data/processed/`; the row counts were checked against `n_rows` of every `meta.json`).
+
+A plain `.npy` file has a fixed header followed by raw row-major float16 data, so row `i` of a layer starts at byte `header_length + i * d * 2` and a row range can be read with an HTTP range request, without downloading the layer. Local extraction, `load_layer`, `load_meta` and `load_word_table` are not affected. Rules for the remote copy:
+
+- Always read a **commit**, never a moving branch name: the revision is resolved to its commit hash once and used for the features, the word table and `meta.json` of the whole read.
+- If `meta.json` has `max_rows` not null, the features cover only the first `n_rows` rows of the word table (section 4); a remote read covers rows `0..n_rows` by default and never beyond.
+- Tokens are never stored in the repository, in configuration files or in logs; the user's own Hugging Face login is used.
+
 ## 5. Control labels (`data/processed/control_{train_treebank}.json`)
 Built from the train split of `ewt` or `isdt` (Hewitt and Liang, 2019):
 
@@ -216,6 +228,26 @@ def extract_features(model_key: str, treebank: str, split: str, *, init: str = "
 def load_layer(model: str, init: str, pooling: str, treebank: str, split: str, layer: int) -> np.ndarray   # mmap, float16 [N, d]
 def load_meta(model: str, init: str, pooling: str, treebank: str, split: str) -> dict
 ```
+
+### `lib/remote_features.py` (DS, optional)
+```python
+@dataclass(frozen=True)
+class RemoteBatch:
+    rows: np.ndarray        # int64 [B], row indices in the word table (not in the batch), increasing
+    features: np.ndarray    # float16 [B, d], NaN rows kept, same values as load_layer(...)[rows]
+    table: pd.DataFrame     # the B word-table rows, all columns of section 2, index = rows
+
+def iter_remote_feature_batches(repo_id: str, model: str, init: str, pooling: str, treebank: str, split: str, layer: int,
+                                *, revision: str, batch_size: int = 512, start_row: int = 0, stop_row: int | None = None,
+                                repo_type: str = "dataset", features_prefix: str = "", max_retries: int = 3, retry_delay: float = 1.0,
+                                source: RangeSource | None = None) -> Iterator[RemoteBatch]
+```
+- `features_prefix` is the folder of the feature folders inside the repository (default: the root).
+- `batch_size` counts word rows given to the caller; the last batch may be smaller. `start_row`/`stop_row` select a half-open range of word-table rows; `stop_row=None` means the number of feature rows of the folder (`meta["n_rows"]`). An empty range yields nothing.
+- Arguments, credentials, revision, metadata (`model`, `init`, `pooling`, `treebank`, `split`, `num_layers`, `hidden_size`, `n_rows`, `dtype_saved`), the `.npy` header and the word table are checked **when the function is called**, before the first batch: `ValueError` for invalid arguments or a mismatch, `FileNotFoundError` for a missing artifact or revision, `PermissionError` for missing or denied access. Errors never contain tokens.
+- Rows are in the original order and are never filtered: NaN rows and `next_upos` nulls are kept. `table` carries the stored `upos` and `next_upos`; control labels are not stored there, so compute them on the **whole** word table and index them with `rows` (`control_next_labels` needs the next word of the same sentence, which may lie in another batch).
+- Memory is bounded by one batch of features plus one parquet row group of the word table. A failed read is retried up to `max_retries` times before the batch is yielded, so a row is never yielded twice or skipped.
+- `RangeSource` is a protocol for the byte transport (`revision`, `size(path)`, `read(path, start, length)`, `bytes_transferred`); the default one reads from Hugging Face, tests pass an in-memory one.
 
 ### `lib/control_tasks.py` (E3, Marcin)
 ```python

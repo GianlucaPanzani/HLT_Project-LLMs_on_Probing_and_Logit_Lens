@@ -12,6 +12,7 @@ Formats are defined in [CONTRACTS.md](CONTRACTS.md) sections 3 to 5; this file o
 | `src/lib/control_tasks.py` | Control labels of Hewitt and Liang (2019): one random fixed label per word type of the train treebank, unseen words seeded with md5. |
 | `scripts/01_extract_features.py` | Command line for `extract_features`. |
 | `scripts/03_build_control.py` | Writes `data/processed/control_ewt.json` and `control_isdt.json`. |
+| `src/lib/feature_report.py`, `scripts/04_report_features.py` | Read-only status table of the Italian and multilingual runs (E6): which folders exist, rows, size, time, NaN rows, cap. Never loads a model. |
 
 ## 2. Rebuild everything from scratch
 
@@ -38,6 +39,11 @@ Expected control mapping sizes (UD r2.19, measured): `ewt` 19,674 word types (20
 - **Shared storage (all 25 English folders, 32.4 GB):** 
   Google Drive folder `features` with the same structure as `features/` here, plus a `README.txt`.
   Download only the folders you need into `features/` (same structure), or anywhere else and set `HLT_FEATURES_DIR`.
+- **Hugging Face (private dataset `hlt-group11/features`):** the same feature folders at the repository root (`{model}/{init}/{pooling}/{treebank}_{split}/`),
+  plus the word tables in `data/processed/`. It can also be read in bounded batches without downloading it, see [REMOTE_FEATURES.md](REMOTE_FEATURES.md).
+  **When you upload features for a new treebank, upload its word table too** (`data/processed/{treebank}_{split}.parquet`), from the same build used for the
+  extraction: its number of rows must equal `n_rows` of every `meta.json`, otherwise streaming refuses to read it. Upload only folders that have a `meta.json`.
+  Use a token with write access only for the upload and keep it out of files, commands in the repository and logs.
 
 ## 4. Time and disk (E4, measured)
 
@@ -66,30 +72,95 @@ Total for E4: 25 folders, 32.4 GB, about 20 minutes of GPU time.
 Reference speed on the GTX 1650 Ti: about 100 sentences/s for BERT-base and GPT-2, about 190 sentences/s for DistilBERT
 (EWT train has 12,544 sentences). On 2 CPU cores a BERT-base-sized model reaches about 23 sentences/s.
 
-## 5. Planning the Italian and multilingual runs (E6)
+## 5. Italian and multilingual runs (E6, issue #8)
 
-Not run yet. The code is the same (decoders automatically get BOS and `add_prefix_space=True`), but the Italian
-and multilingual tokenizers were not tested by E1-E4: start with a small run and check `n_nan_rows` in `meta.json`.
+**Status: not run yet.** The runs below need a machine with a GPU and enough free disk (about 53 GB with the mGPT cap).
+They were not run on the team's 8 GB RAM Mac (16 to 21 GB of free disk, and mGPT does not fit comfortably in 8 GB of RAM); do not try there.
+Whoever runs them reports in #8 with the table printed by `04_report_features.py` (see "Report").
+
+Expected result for every run: `n_nan_rows = 0` and `n_truncated_sentences = 0`. The Italian alignment was checked in X1
+([ws3_italian_notes.md](results/ws3_italian_notes.md)): every ISDT and PUD IT word gets at least one subword with all four
+tokenizers, and the longest sequence is 403 positions (mBERT, ISDT train) against a limit of 512. A different result is a bug: report it in #8.
+
+### 5.1 Before the first run
+
+Run from the repository root (PowerShell users: see section 6). Needed once per machine:
 
 ```bash
-PYTHONPATH=src python scripts/01_extract_features.py --model bert_it --treebank pud_it     # small first test (~1 min)
+PYTHONPATH=src python scripts/00_download_data.py --treebank ewt isdt pud_en pud_it
+PYTHONPATH=src python scripts/02_build_word_tables.py --treebank ewt isdt pud_en pud_it
+PYTHONPATH=src python scripts/01_extract_features.py --model bert_it --treebank pud_it    # smoke test, about 1 minute, 0.47 GB
+PYTHONPATH=src python scripts/04_report_features.py --models bert_it                        # the pud_it row must say done, 0 NaN rows
 ```
 
-Disk estimates (exact formula above; mGPT has 25 layers of 2048 dims, i.e. 100 KB per word):
+### 5.2 The runs, in order
 
-| Model | Runs (CONTRACTS.md section 4) | Disk |
-| :-- | :-- | --: |
-| bert_it | isdt (train/dev/test) + pud_it, first | 6.4 GB |
-| geppetto | isdt + pud_it, first and last | 12.9 GB |
-| mbert | ewt + isdt + pud_en + pud_it, first | 11.9 GB |
-| mgpt | ewt + isdt + pud_en + pud_it, first, **full** | **61 GB** |
-| mgpt | same, with `--max-rows 50000` on the two train splits | 22 GB |
+Order follows what each run unblocks. Every line covers all splits of the treebank (`train`, `dev`, `test`; PUD only `test`) unless a `--split` is given.
+Disk is exact (`rows x (L + 1) x d x 2 bytes`; 12-layer models 19,968 bytes per row, mGPT 102,400 bytes per row).
+Time: 12-layer models run at about 100 sentences/s on a GTX 1650 Ti (section 4), so ISDT train (13,121 sentences) is a few minutes per run;
+mGPT was **not measured**: it has about 10 times the parameters of GPT-2, so expect roughly 10 times slower than the 12-layer models on a GPU, and much slower on CPU.
 
-mGPT (1.3B parameters):
-- Cap the train splits, as CONTRACTS.md section 4 allows for mGPT only:
-  `--model mgpt --treebank ewt --split train --max-rows 50000`, then `--split dev test` without the cap (same for `isdt`).
-- Weights in float16 take about 2.7 GB of GPU memory, so a 4 GB GPU is tight: start with `--batch-size 4`.
-- On CPU the script loads it in bfloat16 (recorded in `meta.json`); this works but is slow.
+| Step | Command (`--init pretrained` is the default) | Disk | Unblocks |
+| :-- | :-- | --: | :-- |
+| 1 | `--model bert_it --treebank isdt --pooling first` | 5.96 GB | X4, probing of Italian BERT |
+| 2 | `--model bert_it --treebank pud_it --pooling first` | 0.47 GB | X4 |
+| 3 | `--model geppetto --treebank isdt --pooling first` | 5.96 GB | X4 |
+| 4 | `--model geppetto --treebank isdt --pooling last` | 5.96 GB | P5 (`upos_next`), L8 |
+| 5 | `--model geppetto --treebank pud_it --pooling first` and `--pooling last` | 0.95 GB | X4, L7, L8 |
+| 6 | `--model mbert --treebank ewt --pooling first` | 5.09 GB | X2 |
+| 7 | `--model mbert --treebank isdt --pooling first` | 5.96 GB | X2 |
+| 8 | `--model mbert --treebank pud_en --pooling first` and `--treebank pud_it` | 0.89 GB | X2 |
+| 9 | mGPT, see 5.3 | 22.3 GB (61.2 GB without the cap) | X3 |
+
+Totals: bert_it 6.4 GB, geppetto 12.9 GB, mbert 11.9 GB, mGPT 22.3 GB with the cap.
+Prefix every command with `PYTHONPATH=src python scripts/01_extract_features.py`.
+Steps 1 to 5 are what P5, X4, L7 and L8 wait for; do them first. Steps 6 to 8 are for X2; step 9 is for X3 and is the slowest, so start it early on a machine of its own if there is one.
+Steps are independent: they can be split between machines (each run writes only its own folder).
+
+### 5.3 mGPT (1.3B parameters, 24 layers, d = 2048)
+
+The capped train splits keep whole sentences up to 50,000 rows (so slightly fewer); dev, test and PUD are never capped:
+
+```bash
+PYTHONPATH=src python scripts/01_extract_features.py --model mgpt --treebank ewt  --split train --max-rows 50000 --batch-size 4
+PYTHONPATH=src python scripts/01_extract_features.py --model mgpt --treebank ewt  --split dev test --batch-size 4
+PYTHONPATH=src python scripts/01_extract_features.py --model mgpt --treebank isdt --split train --max-rows 50000 --batch-size 4
+PYTHONPATH=src python scripts/01_extract_features.py --model mgpt --treebank isdt --split dev test --batch-size 4
+PYTHONPATH=src python scripts/01_extract_features.py --model mgpt --treebank pud_en --batch-size 4
+PYTHONPATH=src python scripts/01_extract_features.py --model mgpt --treebank pud_it --batch-size 4
+```
+
+| Run | Rows | Disk |
+| :-- | --: | --: |
+| ewt train (capped) + dev + test | at most 100,242 | 10.26 GB |
+| isdt train (capped) + dev + test | at most 72,324 | 7.41 GB |
+| pud_en | 21,180 | 2.17 GB |
+| pud_it | 23,783 | 2.44 GB |
+| Without the cap: ewt 26.09 GB, isdt 30.55 GB | | 61.2 GB in total |
+
+- The cap is the one allowed by CONTRACTS.md section 4 (mGPT train only) and is recorded as `max_rows` in `meta.json`. It must be stated in the X3 results (#29), and every model compared with mGPT there must use the same `--max-train-rows`.
+- Weights in float16 take about 2.7 GB of GPU memory, so a 4 GB GPU is tight: keep `--batch-size 4` (try 8 on larger GPUs). Batches are sorted longest first, so an out-of-memory error shows in the first seconds.
+- On CPU the script loads it in bfloat16 (recorded in `meta.json`); it works but is very slow.
+
+### 5.4 When the disk is smaller than the output
+
+Run a few steps, upload the folders to the shared storage (section 3), delete them locally and continue. Upload a folder only when it has a `meta.json`
+(an incomplete folder cannot be read). Do not delete anything before the upload is checked: the report below can be run again from the shared copy by setting `HLT_FEATURES_DIR`.
+Give the shared copy the same structure as `features/`.
+For the Hugging Face repository `hlt-group11/features`, also upload the word tables of the treebanks you add (`data/processed/{treebank}_{split}.parquet`; `isdt` and `pud_it` are already there): see section 3 once the streaming PR is merged.
+
+### 5.5 Report
+
+After each batch of runs, on the machine that holds the folders (or with `HLT_FEATURES_DIR` pointing to them):
+
+```bash
+PYTHONPATH=src python scripts/04_report_features.py                          # all E6 runs
+PYTHONPATH=src python scripts/04_report_features.py --models bert_it geppetto   # only some models
+```
+
+Paste the table in a comment of #8: it gives, for every run, the status (`done`, `missing`, or `check cap` if a cap was used where the contract does not allow one),
+rows, size, time, NaN rows, truncated sentences, cap, model dtype and device. Then tick the lines of #8 and add the link to the shared storage.
+The `size_gb` column is the size of the folder where the report runs; check it against the Disk column above.
 
 ## 6. Setup on Windows (tested on Nov 13)
 
@@ -112,7 +183,7 @@ mGPT (1.3B parameters):
 - **float16 on disk.** Cast to float32 before training: `X = np.asarray(load_layer(...), dtype=np.float32)`.
 - **Decoders, last layer.** Hugging Face applies the final layer norm (`ln_f`) only to `hidden_states[L]`. Layers 0..L-1 of GPT-2 are raw residual-stream states whose norm grows with depth, layer L is normalised. `meta.json` records this as `"final_norm_on_last_layer": true`. Standardise features (for example `StandardScaler` fitted on train) before probing so that the probe's regularisation means the same thing at every layer.
 - **Decoders, `first` pooling.** The first subword of a word has not seen the rest of the word (causal model). This is intended (main results use `first` for all models); `last` is needed for `upos_next` and the lens bridge.
-- **Truncation.** UD sentences are below the limits (longest: 159 words in EWT, 310 in ISDT train), and all English runs had `n_truncated_sentences = 0`. The 310-word ISDT sentence may come close to the 512-subword limit of the BERT-family models: check `n_truncated_sentences` and `n_nan_rows` after E6. If a word is only partly cut, it keeps the subwords that remain.
+- **Truncation.** UD sentences are below the limits (longest: 159 words in EWT, 310 in ISDT train), and all English runs had `n_truncated_sentences = 0`. For the Italian models, X1 measured the longest ISDT sequence at 403 positions (mBERT) against a limit of 512, so nothing is expected to be truncated; `n_truncated_sentences` and `n_nan_rows` in the E6 report should be 0. If a word is only partly cut, it keeps the subwords that remain.
 - **Random weights.** `--init random` always uses seed 42, so every member gets the same random network.
 - **Decoders run without their LM head.** `extract_into` calls `model.base_model`, which returns the same hidden states without computing `[B, T, vocab]` logits (saves GPU memory).
 - **Extra `meta.json` fields** (not in the contract): `n_sentences`, `max_length`, `batch_size`, `device`, `seconds`, `final_norm_on_last_layer`.

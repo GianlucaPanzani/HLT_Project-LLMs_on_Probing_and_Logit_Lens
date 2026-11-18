@@ -1,7 +1,7 @@
-data/
-results/
-features/
-checkpoints/
+/data/
+/results/
+/features/
+/checkpoints/
 __pycache__/
 *.pyc
 .venv/
