@@ -5,7 +5,9 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from ws4_lens.upos_bridge import (
+torch = pytest.importorskip("torch")
+
+from ws4_lens.upos_bridge import (  # noqa: E402
     _is_number,
     _is_punctuation,
     build_upos_lexicon,
