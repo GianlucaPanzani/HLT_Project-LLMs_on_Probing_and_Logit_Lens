@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> None:
     output = ROOT / "results" / "summary" / "cog.parquet"
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    # Save data
+    # Save summary data
     summary.to_parquet(output, index=False)
     print(f"Summary results wrote to {output} ({len(summary)} rows from {len(paths)} result files).")
     return
