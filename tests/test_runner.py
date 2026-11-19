@@ -456,7 +456,7 @@ jobs:
 
 def test_ws1_config_covers_required_jobs(scripts):
     cli, _ = scripts
-    jobs = cli._load_jobs(Path(__file__).resolve().parents[1] / "configs" / "ws1.yaml")
+    jobs = cli._load_jobs_from_yaml(Path(__file__).resolve().parents[1] / "configs" / "ws1.yaml")
     assert {(job["model"], job["probe"], job["init"]) for job in jobs} == {
         (model, probe, init) for model in ("bert", "distilbert", "gpt2")
         for probe in ("linear", "mlp") for init in ("pretrained", "random")
