@@ -502,6 +502,9 @@ def run_probing(
                 "Use a mapping built from the complete training word table."
             )
     
+    if verbose:
+        print("Building datasets from HuggingFace repo...")
+    
     # Build training data
     train_table, upos_tag_counts, word_types = _scan_data(
         model,
@@ -643,7 +646,7 @@ def run_probing(
         del split_features
 
         if verbose:
-            print("Evaluation phase:")
+            print("  Evaluation phase:")
 
         # Evaluating probes
         for eval_treebank, (rows_index, y_eval_dict) in list(y_eval_data.items()):
@@ -668,7 +671,7 @@ def run_probing(
             
             # Outputs
             if verbose:
-                print(f"  Layer {layer}, {eval_treebank}:", end=" ")
+                print(f"    Layer {layer}, {eval_treebank}:", end=" ")
             for task in tasks:
                 result_rows.append({
                     "model": model,
@@ -691,6 +694,8 @@ def run_probing(
                 })
                 if verbose:
                     print(f"{task}={correct_pred_counter[task] / total_predictions:.4f}", end=" ")
+            if verbose:
+                print()
 
         del fitted_probes
 
