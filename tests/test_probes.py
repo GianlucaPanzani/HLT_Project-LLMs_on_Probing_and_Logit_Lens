@@ -1,4 +1,4 @@
-"""Check P2 requirements with small synthetic datasets.
+"""Check P2 and P3 requirements with small synthetic datasets.
 
 Run the separate fit benchmark with:
 PYTHONPATH=src python -m pytest -q -s tests/tests_probing_fit_benchmark.py
@@ -12,7 +12,10 @@ from sklearn.exceptions import ConvergenceWarning, NotFittedError
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
-from ws1_probing.probes import LinearProbe
+# probes imports torch directly, so skip before importing it when unavailable.
+torch = pytest.importorskip("torch")
+
+from ws1_probing.probes import LinearProbe, MLPProbe  # noqa: E402
 
 
 @pytest.fixture
@@ -544,3 +547,198 @@ def test_invalid_prediction_data(regularization_data: tuple, X: np.ndarray) -> N
     probe = LinearProbe(Cs=(1.0,)).fit(X_train, y_train, X_dev, y_dev)
     with pytest.raises(ValueError):
         probe.predict(X)
+
+
+@pytest.fixture
+def mlp_cpu():
+    """Limit CPU threads for tiny networks and restore the previous setting.
+
+    Returns
+    -------
+    Iterator[None]
+        A test context using one CPU thread without changing other tests.
+    """
+    previous = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        yield
+    finally:
+        torch.set_num_threads(previous)
+
+
+@pytest.fixture
+def xor_splits() -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Generate balanced XOR clusters with independent train and dev samples.
+
+    Returns
+    -------
+    dict[str, tuple[np.ndarray, np.ndarray]]
+        Float32 features and global UPOS labels 7 and 16. Reflections keep
+        each class mean at zero so a linear boundary cannot solve the task.
+    """
+    rng = np.random.default_rng(42)
+    splits = {}
+    for split, count in (("train", 512), ("dev", 128)):
+        magnitudes = rng.uniform(0.8, 1.2, size=(count, 2))
+        X = np.vstack([magnitudes * signs for signs in ((1, 1), (-1, -1), (1, -1), (-1, 1))])
+        y = np.repeat([7, 7, 16, 16], count)
+        order = rng.permutation(len(y))
+        splits[split] = (X[order].astype(np.float32), y[order])
+    return splits
+
+
+@pytest.mark.usefixtures("mlp_cpu")
+def test_mlp_learns_xor_while_linear_stays_near_chance(xor_splits: dict) -> None:
+    """Verify the P3 nonlinear accuracy criterion using default hyperparameters."""
+    X_train, y_train = xor_splits["train"]
+    X_dev, y_dev = xor_splits["dev"]
+    probe = MLPProbe(device="cpu")
+    assert probe.fit(X_train, y_train, X_dev, y_dev) is probe
+    linear = LinearProbe().fit(X_train, y_train, X_dev, y_dev)
+    predictions = probe.predict(X_dev)
+
+    assert predictions.shape == y_dev.shape
+    assert np.issubdtype(predictions.dtype, np.integer)
+    assert np.mean(predictions == y_dev) > 0.9
+    assert abs(np.mean(linear.predict(X_dev) == y_dev) - 0.5) <= 0.1
+    assert {"hidden", "lr", "epochs_trained", "best_dev_acc"} <= probe.hparams.keys()
+    assert probe.hparams["hidden"] == 256
+    assert probe.hparams["lr"] == 1e-3
+    assert 1 <= probe.hparams["epochs_trained"] <= probe.max_epochs
+    assert np.mean(predictions == y_dev) == pytest.approx(probe.hparams["best_dev_acc"])
+
+
+@pytest.mark.usefixtures("mlp_cpu")
+def test_mlp_shuffled_labels_do_not_generalize() -> None:
+    """Check the same majority-rate bound as P2 on independent shuffled labels."""
+    rng = np.random.default_rng(42)
+    splits = []
+    centers = 4.0 * np.eye(3, dtype=np.float32)
+    for n_per_class in (300, 200, 1000):
+        groups = np.repeat(np.arange(3), n_per_class)
+        X = centers[groups] + rng.normal(0.0, 0.3, size=(len(groups), 3))
+        y = rng.permutation(np.array([0, 7, 16])[groups])
+        splits.append((X.astype(np.float32), y))
+    (X_train, y_train), (X_dev, y_dev), (X_test, y_test) = splits
+    probe = MLPProbe(device="cpu").fit(X_train, y_train, X_dev, y_dev)
+
+    accuracy = np.mean(probe.predict(X_test) == y_test)
+    majority_rate = np.bincount(y_test, minlength=17).max() / len(y_test)
+    assert accuracy <= majority_rate + 0.05
+
+
+@pytest.mark.usefixtures("mlp_cpu")
+def test_mlp_stops_early_on_noisy_labels() -> None:
+    """Stop before max_epochs with patience=1 and labels independent of features."""
+    rng = np.random.default_rng(42)
+    X_train = rng.normal(size=(256, 4)).astype(np.float32)
+    X_dev = rng.normal(size=(128, 4)).astype(np.float32)
+    y_train = rng.integers(0, 17, size=len(X_train))
+    y_dev = rng.integers(0, 17, size=len(X_dev))
+    probe = MLPProbe(patience=1, device="cpu").fit(X_train, y_train, X_dev, y_dev)
+
+    assert 1 < probe.hparams["epochs_trained"] < probe.max_epochs
+    assert np.mean(probe.predict(X_dev) == y_dev) == pytest.approx(probe.hparams["best_dev_acc"])
+
+
+@pytest.mark.usefixtures("mlp_cpu")
+def test_mlp_restores_best_weights_and_counts_global_improvements(
+    synthetic_splits: dict, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restore an independent checkpoint even when accuracy recovers below its best.
+
+    Parameters
+    ----------
+    synthetic_splits : dict
+        Small feature arrays used for real gradient updates.
+    monkeypatch : pytest.MonkeyPatch
+        Controls dev predictions to produce accuracies 0.8, 0.4, 0.6.
+
+    Returns
+    -------
+    None
+        Patience=2 stops after three epochs and restores epoch one's weights.
+    """
+    X_train, y_train = synthetic_splits["train"]
+    X_dev, y_dev = synthetic_splits["dev"]
+    probe = MLPProbe(hidden=16, patience=2, max_epochs=10, device="cpu")
+    states = []
+
+    def controlled_predictions(X_scaled):
+        states.append({name: value.detach().clone() for name, value in probe.model_.state_dict().items()})
+        correct = (24, 12, 18)[min(len(states) - 1, 2)]
+        predictions = (y_dev + 1) % 17
+        predictions[:correct] = y_dev[:correct]
+        return predictions
+
+    monkeypatch.setattr(probe, "_predict_scaled", controlled_predictions)
+    probe.fit(X_train, y_train, X_dev, y_dev)
+
+    assert probe.hparams["epochs_trained"] == 3
+    assert probe.hparams["best_dev_acc"] == pytest.approx(0.8)
+    assert any(not torch.equal(states[0][name], states[-1][name]) for name in states[0])
+    for name, value in probe.model_.state_dict().items():
+        torch.testing.assert_close(value, states[0][name], rtol=0, atol=0)
+
+
+@pytest.mark.usefixtures("mlp_cpu")
+def test_mlp_reproducible_training(synthetic_splits: dict) -> None:
+    """Identical seeds reproduce CPU training with shuffled mini-batches."""
+    X_train, y_train = synthetic_splits["train"]
+    X_dev, y_dev = synthetic_splits["dev"]
+    first = MLPProbe(hidden=16, batch_size=17, max_epochs=4, seed=42, device="cpu")
+    second = MLPProbe(hidden=16, batch_size=17, max_epochs=4, seed=42, device="cpu")
+    first.fit(X_train, y_train, X_dev, y_dev)
+    second.fit(X_train, y_train, X_dev, y_dev)
+
+    assert first.hparams == second.hparams
+    for name, value in first.model_.state_dict().items():
+        torch.testing.assert_close(value, second.model_.state_dict()[name], rtol=0, atol=0)
+    np.testing.assert_array_equal(first.predict(X_dev), second.predict(X_dev))
+
+
+@pytest.mark.usefixtures("mlp_cpu")
+def test_mlp_train_only_scaling_and_batched_prediction(
+    synthetic_splits: dict, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify train-only statistics and prediction equivalence across batch sizes.
+
+    Parameters
+    ----------
+    synthetic_splits : dict
+        Independent training, development and test arrays.
+    monkeypatch : pytest.MonkeyPatch
+        Records the real scaler fits to detect development or prediction leakage.
+
+    Returns
+    -------
+    None
+        Only train statistics are fitted; partial batches preserve predictions.
+    """
+    X_train, y_train = synthetic_splits["train"]
+    X_dev, y_dev = synthetic_splits["dev"]
+    X_test, _ = synthetic_splits["test"]
+    X_train = X_train.astype(np.float32) * [0.1, 100.0] + [10.0, -200.0]
+    X_dev = X_dev.astype(np.float32) + [20.0, 50.0]
+    original_train = X_train.copy()
+    original_fit = StandardScaler.fit
+    fitted_inputs = []
+
+    def record_fit(scaler, X, y=None, **kwargs):
+        fitted_inputs.append(X.copy())
+        return original_fit(scaler, X, y, **kwargs)
+
+    monkeypatch.setattr(StandardScaler, "fit", record_fit)
+    probe = MLPProbe(hidden=16, batch_size=17, max_epochs=2, patience=5, device="cpu")
+    probe.fit(X_train, y_train, X_dev, y_dev)
+    assert probe.hparams["epochs_trained"] == 2
+    predictions = probe.predict(X_test)
+    probe.batch_size = 100
+    np.testing.assert_array_equal(probe.predict(X_test), predictions)
+    with torch.inference_mode():
+        scaled = probe.scaler.transform(X_test.astype(np.float32))
+        expected = probe.model_(torch.from_numpy(scaled)).argmax(dim=1).numpy()
+    np.testing.assert_array_equal(predictions, expected)
+    assert len(fitted_inputs) == 1
+    np.testing.assert_array_equal(fitted_inputs[0], X_train.astype(np.float32))
+    np.testing.assert_array_equal(X_train, original_train)

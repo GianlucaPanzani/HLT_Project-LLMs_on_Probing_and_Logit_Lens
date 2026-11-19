@@ -14,7 +14,7 @@ bash tests/test.sh tests/test_probes.py
 - Runs Ruff even when pytest fails.
 - Does not exclude tests marked `slow` in the selected file.
 - Invalid arguments or a missing file produce exit status 1.
-- After running both checks, the script returns **Ruff's exit status**. A successful exit therefore does not guarantee that pytest passed; inspect both outputs.
+- After running both checks, returns the first non-zero exit status: pytest's if pytest failed, otherwise Ruff's. Returns 0 only when both checks pass.
 
 ## `tests/test_all.sh`
 
@@ -23,7 +23,8 @@ Runs the automatically discovered pytest suite. Accepts at most one optional arg
 | Command | Behavior |
 | :-- | :-- |
 | `bash tests/test_all.sh` | Runs `python -m pytest -q`, including slow tests. |
-| `bash tests/test_all.sh --slow` | Same as the default; runs all tests, not just slow tests. |
+| `bash tests/test_all.sh --all` | Same as the default; runs the complete discovered suite. |
+| `bash tests/test_all.sh --slow` | Runs only slow tests with `python -m pytest -q -m slow`. |
 | `bash tests/test_all.sh --no-slow` | Runs `python -m pytest -q -m "not slow"`. |
 
 - Slow tests may download models and require local datasets or generated word tables. These scripts do not prepare those prerequisites.
@@ -32,7 +33,7 @@ Runs the automatically discovered pytest suite. Accepts at most one optional arg
 
 ## P2 benchmark
 
-`tests/tests_probing_fit_benchmark.py` deliberately uses a `tests_` prefix, so it is not automatically discovered by `test_all.sh`, including with `--slow`. Run it explicitly to display the fit timing and environment details for the P2 PR:
+`tests/tests_probing_fit_benchmark.py` deliberately uses a `tests_` prefix, so it is not automatically discovered by `test_all.sh`, including with `--all`. Run it explicitly to display the fit timing and environment details for the P2 PR:
 
 ```bash
 PYTHONPATH=src python -m pytest -q -s tests/tests_probing_fit_benchmark.py
