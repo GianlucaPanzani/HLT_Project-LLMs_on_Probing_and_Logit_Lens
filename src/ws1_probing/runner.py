@@ -1,29 +1,29 @@
-import os
+from collections import Counter
 import numpy as np
+import os
 import pandas as pd
 
-from lib.control_tasks import control_labels, load_control
+from lib.control_tasks import control_labels
 from lib.data import UPOS_TAGS
 from lib.registry import get_model_spec, get_treebank_spec
 from lib.remote_features import HfRangeSource, iter_remote_feature_batches
 from ws1_probing.probes import LinearProbe, MLPProbe
 
 
-def _prepare_split(
+def _scan_data(
     model: str,
     init: str,
     pooling: str,
     treebank: str,
     split: str,
-    tasks: tuple[str, ...],
-    control: dict | None,
     *,
-    source: HfRangeSource
-) -> tuple[np.ndarray, dict[str, np.ndarray]]:
-    """Return valid row positions and aligned integer labels."""
+    source: HfRangeSource,
+    collect_control_enabled: bool = False
+) -> tuple[pd.DataFrame, Counter[str], set[str]]:
+
     table_parts = []
-    row_parts = []
-    valid_parts = []
+    tag_counts = Counter()
+    word_types = set()
 
     # Pick the batches from HF
     batches = iter_remote_feature_batches(
@@ -37,48 +37,77 @@ def _prepare_split(
         revision=source.revision,
         source=source,
     )
+
     for batch in batches:
-        table_parts.append(batch.table)
-        row_parts.append(batch.rows)
-        valid_parts.append(~np.isnan(batch.features).any(axis=1))
+        table = batch.table[["form", "upos"]]
 
-    if not row_parts:
-        raise ValueError(f"No feature rows for {treebank}/{split}.")
-
-    table = pd.concat(table_parts)
-    original_rows = np.concatenate(row_parts)
-    valid = np.concatenate(valid_parts)
-
-    tag_to_id = {tag: index for index, tag in enumerate(UPOS_TAGS)}
-    encoded_labels = {}
-    for task in tasks:
-        # Get the labels based on the type of task
-        if task == "upos":
-            labels = table["upos"]
-        elif task == "control":
-            if control is None:
-                raise ValueError("Control mapping is required.")
-            labels = control_labels(table, control)
-        else:
-            raise ValueError(f"Unsupported task: {task!r}.")
-
-        # Check of unknown labels
-        unknown = labels.notna() & ~labels.isin(UPOS_TAGS)
+        # Check if there are unknown labels
+        unknown = table["upos"].notna() & ~table["upos"].isin(UPOS_TAGS)
         if unknown.any():
-            raise ValueError(f"Unknown labels for {task} in {treebank}/{split}.")
+            raise ValueError(f"Unknown UPOS labels in {treebank}/{split}.")
 
-        valid &= labels.notna().to_numpy()
-        encoded_labels[task] = labels.map(tag_to_id)
+        # Save UPOS tag and form
+        if collect_control_enabled:
+            if table["upos"].isna().any():
+                raise ValueError("Control mapping requires non-null train UPOS.")
+            tag_counts.update(table["upos"])
+            word_types.update(table["form"])
 
-    positions = np.flatnonzero(valid)
-    if positions.size == 0:
+        # Save only valid data (non-NaN data) from the whole table
+        valid = ~np.isnan(batch.features).any(axis=1) & table["upos"].notna().to_numpy()
+        if valid.any():
+            selected = table.iloc[np.flatnonzero(valid)].copy()
+            selected.index = batch.rows[valid]
+            table_parts.append(selected)
+
+    # Build the Dataframe
+    if not table_parts:
         raise ValueError(f"No valid rows for {treebank}/{split}.")
+    tables_df = pd.concat(table_parts)
 
-    targets = {
-        task: labels.iloc[positions].to_numpy(dtype=np.int64)
-        for task, labels in encoded_labels.items()
+    return tables_df, tag_counts, word_types
+
+def _build_control_mapping(
+    train_treebank: str,
+    counts: Counter[str],
+    word_types: set[str],
+) -> dict:
+    """Build the shared control mapping from complete train statistics."""
+
+    total = sum(counts.values())
+    if total == 0:
+        raise ValueError("Cannot build control mapping from empty statistics.")
+
+    # Build the frequency of each UPOS tag
+    distribution = {
+        tag: counts.get(tag, 0) / total
+        for tag in UPOS_TAGS
     }
-    return original_rows[positions], targets
+
+    # Build the probabilities from the frequecies
+    probabilities = np.array(
+        [distribution[tag] for tag in UPOS_TAGS],
+        dtype=np.float64,
+    )
+
+    # Tags are drawn randomly from the probability distribution
+    forms = sorted(word_types)
+    rng = np.random.default_rng(42)
+    drawn_labels = rng.choice(
+        len(UPOS_TAGS),
+        size=len(forms),
+        p=probabilities / probabilities.sum(),
+    )
+
+    return {
+        "treebank": train_treebank,
+        "seed": 42,
+        "distribution": distribution,
+        "mapping": {
+            form: UPOS_TAGS[int(label)]
+            for form, label in zip(forms, drawn_labels)
+        },
+    }
 
 
 def run_probing(
@@ -95,7 +124,7 @@ def run_probing(
         seed: int = 42
     ) -> pd.DataFrame:
 
-    # Parameters validation and initializations
+    # Initializations
     model_spec = get_model_spec(model)
     train_treebank_spec = get_treebank_spec(train_treebank)
     if eval_treebanks is None:
@@ -114,12 +143,16 @@ def run_probing(
         probe_model = MLPProbe
     else:
         raise ValueError("probe should be linear or mlp.")
+    
+    # Parameters validation
     if init not in ["pretrained", "random"]:
         raise ValueError("init should be pretrained or random.")
     if pooling not in ["first", "last", "mean"]:
         raise ValueError("pooling should be first, last, or mean.")
-    if not tasks:
-        raise ValueError("tasks should be random or .")
+    if not tasks or any(task not in ("upos", "control") for task in tasks):
+        raise ValueError("tasks must contain only 'upos' and 'control'.")
+    if len(set(tasks)) != len(tasks):
+        raise ValueError("tasks must not contain duplicates.")
     if layers is None:
         layers = list(range(model_spec["num_layers"] + 1))
     if not layers:
@@ -127,8 +160,9 @@ def run_probing(
     for layer in layers:
         if layer < 0 or layer > model_spec["num_layers"]:
             raise ValueError("layers value should be positive or zero.")
-    layers = list(set(layers)).sort()
-    if max_train_rows is not None and max_train_rows <= 0:
+    if len(set(layers)) != len(layers):
+        raise ValueError("layers must not contain duplicates.")
+    if max_train_rows is None or max_train_rows <= 0:
         raise ValueError("max_train_rows should be positive.")
     if seed < 0:
         raise ValueError("seed should be positive or zero.")
@@ -140,69 +174,54 @@ def run_probing(
         raise ValueError("Set HLT_HF_REVISION to the feature repository commit.")
     hf_source = HfRangeSource(repo_id, revision)
     
-    control = load_control(train_treebank) if "control" in tasks else None
-    
     # Build training data
-    train_rows, y_train = _prepare_split(
+    train_table, upos_tag_counts, word_types = _scan_data(
         model,
         init,
         pooling,
         train_treebank,
         "train",
-        tasks,
-        control,
-        source=hf_source
+        source=hf_source,
+        collect_control_enabled="control" in tasks
     )
-    if max_train_rows is not None and len(train_rows) > max_train_rows:
+    if len(train_table) > max_train_rows:
         rng = np.random.default_rng(seed)
-        positions = rng.choice(
-            len(train_rows),
+        drawn_positions = rng.choice(
+            len(train_table),
             size=max_train_rows,
             replace=False,
         )
-        train_rows = train_rows[positions]
-        y_train = {task: labels[positions] for task, labels in y_train.items()}
+        train_table = train_table.iloc[drawn_positions].copy()
+    train_rows = train_table.index.to_numpy(dtype=np.int64)
+
+    # Build the control tags map
+    control = None
+    if "control" in tasks:
+        control = _build_control_mapping(train_treebank, upos_tag_counts, word_types)
     
     # Build development data
-    dev_rows, y_dev = _prepare_split(
+    dev_table, _, _ = _scan_data(
         model,
         init,
         pooling,
         train_treebank,
-        "train",
-        tasks,
-        control,
+        "dev",
         source=hf_source
     )
-    if max_train_rows is not None and len(train_rows) > max_train_rows:
-        rng = np.random.default_rng(seed)
-        positions = rng.choice(
-            len(train_rows),
-            size=max_train_rows,
-            replace=False,
-        )
-        train_rows = train_rows[positions]
-        y_train = {task: labels[positions] for task, labels in y_train.items()}
-    
-    # Build testing data
-    test_rows, y_test = _prepare_split(
-        model,
-        init,
-        pooling,
-        train_treebank,
-        "train",
-        tasks,
-        control,
-        source=hf_source
-    )
-    if max_train_rows is not None and len(train_rows) > max_train_rows:
-        rng = np.random.default_rng(seed)
-        positions = rng.choice(
-            len(train_rows),
-            size=max_train_rows,
-            replace=False,
-        )
-        train_rows = train_rows[positions]
-        y_train = {task: labels[positions] for task, labels in y_train.items()}
+    dev_rows = dev_table.index.to_numpy(dtype=np.int64)
+
+    # Build the integer labels for each dataset (train and dev)
+    tag_to_id_map = {tag: i for i, tag in enumerate(UPOS_TAGS)}
+    y_train = {}
+    y_dev = {}
+    for task in tasks:
+        if task == "upos":
+            train_labels = train_table["upos"]
+            dev_labels = dev_table["upos"]
+        if task == "control":
+            train_labels = control_labels(train_table, control)
+            dev_labels = control_labels(dev_table, control)
+        y_train[task] = train_labels.map(tag_to_id_map).to_numpy(dtype=np.int64)
+        y_dev[task] = dev_labels.map(tag_to_id_map).to_numpy(dtype=np.int64)
 
     return
