@@ -13,7 +13,6 @@ from lib.registry import get_model_spec, get_treebank_spec
 from lib.remote_features import HfRangeSource, iter_remote_feature_batches
 from ws1_probing.probes import LinearProbe, MLPProbe
 
-
 _result_types = {
     "model": "string",
     "train_treebank": "string",
@@ -145,6 +144,7 @@ def _select_features_iterator(
     ):
 
     rows_index = pd.Index(rows)  # Rows indexes
+    seen = np.zeros(len(rows_index), dtype=bool)  # Zeros array
 
     for batch in batches:
 
@@ -160,8 +160,61 @@ def _select_features_iterator(
         if features.shape[1] != hidden_size or not np.isfinite(features).all():
             raise ValueError(f"Invalid selected features for {treebank}/{split}, layer {layer}.")
 
+        seen[selected_positions] = True
         yield selected_positions, features
-        
+    
+    if not seen.all():
+        raise ValueError(f"Missing selected feature rows for {treebank}/{split}, layer {layer}.")
+    return
+
+def _evaluate_probes(
+        model,
+        init,
+        pooling,
+        eval_treebank,
+        layer,
+        rows_index,
+        y_eval_dict,
+        fitted_probes,
+        hidden_size,
+        *,
+        hf_source,
+    ):
+    batches = iter_remote_feature_batches(
+        hf_source.repo_id,
+        model,
+        init,
+        pooling,
+        eval_treebank,
+        "test",
+        layer,
+        revision=hf_source.revision,
+        source=hf_source,
+    )
+
+    selected_features_iterator = _select_features_iterator(
+        batches,
+        layer,
+        rows=rows_index,
+        treebank=eval_treebank,
+        hidden_size=hidden_size,
+        split="test",
+    )
+    
+    # Predictions
+    correct_pred_counter = {task: 0 for task in fitted_probes.keys()}
+    total_predictions = 0
+    for positions, features in selected_features_iterator:
+        for task, probe_model in fitted_probes.items():
+            predictions = probe_model.predict(features)
+            labels = y_eval_dict[task][positions]
+            correct_pred_counter[task] += int(np.count_nonzero(predictions == labels))
+        total_predictions += len(features)
+
+    if total_predictions != len(rows_index):
+        raise ValueError(f"Missing evaluation rows for {eval_treebank}, layer {layer}.")
+    
+    return correct_pred_counter, total_predictions
 
 
 def run_probing(
@@ -254,7 +307,7 @@ def run_probing(
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise ValueError("seed must be a non-negative integer.")
     
-    # Get the HuggingFace repository info from environment variables
+    # Get HuggingFace repo information from environment variables
     repo_id = os.environ.get("HLT_HF_REPO", "hlt-group11/features")
     revision = os.environ.get("HLT_HF_REVISION")
     if not revision:
@@ -307,27 +360,28 @@ def run_probing(
     )
     dev_rows = dev_table.index.to_numpy(dtype=np.int64)
 
-    # Keep only row indices and labels for evaluation: feature batches are discarded.
+    # Build testing data
     eval_tables = {}
     for eval_treebank in eval_treebanks:
-
-        # Check missing layers before fitting any probes
         try:
             for layer in layers:
-                hf_source.size(f"{model}/{init}/{pooling}/{eval_treebank}_test/layer_{layer:02d}.npy")
+                # Check missing layers before fitting any probes
+                path = f"{model}/{init}/{pooling}/{eval_treebank}_test/layer_{layer:02d}.npy"
+                hf_source.size(path)
+                
+                # Build testing table
+                eval_table, _, _ = _scan_data(
+                    model,
+                    init,
+                    pooling,
+                    eval_treebank,
+                    "test",
+                    source=hf_source
+                )
         except FileNotFoundError as error:
             warnings.warn(f"Skipping {eval_treebank}: {error}", RuntimeWarning, stacklevel=2)
             continue
-        
-        # Build testing data
-        eval_table, _, _ = _scan_data(
-            model,
-            init,
-            pooling,
-            eval_treebank,
-            "test",
-            source=hf_source
-        )
+
         eval_tables[eval_treebank] = eval_table
 
     # Build the integer labels for each dataset (train, dev and test)
@@ -407,40 +461,24 @@ def run_probing(
 
         # Evaluating probes
         for eval_treebank, (rows_index, y_eval_dict) in list(y_eval_data.items()):
-
-            batches = iter_remote_feature_batches(
-                repo_id,
-                model,
-                init,
-                pooling,
-                eval_treebank,
-                "test",
-                layer,
-                revision=hf_source.revision,
-                source=hf_source,
-            )
-
-            selected_features_iterator = _select_features_iterator(
-                batches,
-                layer,
-                rows=rows_index,
-                treebank=eval_treebank,
-                hidden_size=model_spec["hidden_size"],
-                split="test",
-            )
-            
-            # Predictions
-            correct_pred_counter = {task: 0 for task in tasks}
-            total_predictions = 0
-            for positions, features in selected_features_iterator:
-                for task in tasks:
-                    predictions = fitted_probes[task].predict(features)
-                    labels = y_eval_dict[task][positions]
-                    correct_pred_counter[task] += int(np.count_nonzero(predictions == labels))
-                total_predictions += len(features)
-
-            if total_predictions != len(rows_index):
-                raise ValueError(f"Missing evaluation rows for {eval_treebank}, layer {layer}.")
+            try:
+                correct_pred_counter, total_predictions = _evaluate_probes(
+                    model,
+                    init,
+                    pooling,
+                    eval_treebank, 
+                    layer,
+                    rows_index, 
+                    y_eval_dict, 
+                    fitted_probes,
+                    hidden_size=model_spec["hidden_size"],
+                    hf_source=hf_source,
+                )
+            except FileNotFoundError as error:
+                warnings.warn(f"Skipping {eval_treebank}: {error}", RuntimeWarning, stacklevel=2)
+                del y_eval_data[eval_treebank]
+                result_rows = [row for row in result_rows if row["eval_treebank"] != eval_treebank]
+                continue
             
             # Outputs
             if verbose:
