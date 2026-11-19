@@ -2,6 +2,7 @@ import json
 import os
 import warnings
 from collections import Counter
+from collections.abc import Iterable, Iterator
 
 import numpy as np
 import pandas as pd
@@ -10,8 +11,8 @@ from lib.control_tasks import control_labels
 from lib.data import UPOS_TAGS
 from lib.paths import probing_result_path
 from lib.registry import get_model_spec, get_treebank_spec
-from lib.remote_features import HfRangeSource, iter_remote_feature_batches
-from ws1_probing.probes import LinearProbe, MLPProbe
+from lib.remote_features import HfRangeSource, RemoteBatch, iter_remote_feature_batches
+from ws1_probing.probes import LinearProbe, MLPProbe, Probe
 
 _result_types = {
     "model": "string",
@@ -44,6 +45,42 @@ def _scan_data(
     source: HfRangeSource,
     collect_control_enabled: bool = False
 ) -> tuple[pd.DataFrame, Counter[str], set[str]]:
+    """Scan layer 0 to identify valid rows and optionally collect control statistics.
+
+    Parameters
+    ----------
+    model : str
+        Model registry key used to locate the remote features.
+    init : str
+        Feature initialization, either 'pretrained' or 'random'.
+    pooling : str
+        Feature pooling mode: 'first', 'mean' or 'last'.
+    treebank : str
+        Treebank registry key.
+    split : str
+        Split to scan: 'train', 'dev' or 'test'.
+    source : HfRangeSource
+        Remote repository source resolved to a fixed commit.
+    collect_control_enabled : bool
+        If True, collect UPOS token counts and case-sensitive word types
+        before filtering NaN feature rows. Defaults to False.
+
+    Returns
+    -------
+    tuple[pd.DataFrame, Counter[str], set[str]]
+        The 'form' and 'upos' columns of rows with non-null UPOS and no NaN
+        features, indexed by their original word-table positions; UPOS counts;
+        and distinct word types. Counts and types are empty when collection
+        is disabled. Statistics cover all streamed rows, before filtering.
+
+    Raises
+    ------
+    ValueError
+        If a non-null UPOS tag is unknown, control statistics are requested
+        with null UPOS labels, or no valid rows remain.
+    FileNotFoundError
+        If a required remote feature, metadata or word-table file is missing.
+    """
 
     table_parts = []
     tag_counts = Counter()
@@ -91,12 +128,36 @@ def _scan_data(
 
     return tables_df, tag_counts, word_types
 
+
 def _build_control_mapping(
     train_treebank: str,
     counts: Counter[str],
     word_types: set[str],
 ) -> dict:
-    """Build the shared control mapping from complete train statistics."""
+    """Build the shared control mapping from complete train statistics.
+
+    Parameters
+    ----------
+    train_treebank : str
+        Training treebank registry key stored in the mapping.
+    counts : Counter[str]
+        UPOS token counts from the complete training split, including rows
+        whose features are NaN, before any training subsampling.
+    word_types : set[str]
+        All case-sensitive word forms in the same training split.
+
+    Returns
+    -------
+    dict
+        Control data containing 'treebank', 'seed', 'distribution' and
+        'mapping'. Each word type receives a tag drawn from the empirical
+        UPOS distribution, using seed 42 and sorted word types.
+
+    Raises
+    ------
+    ValueError
+        If the total token count is zero.
+    """
 
     total = sum(counts.values())
     if total == 0:
@@ -135,13 +196,45 @@ def _build_control_mapping(
 
 
 def _select_features_iterator(
-        batches,
-        layer,
-        rows,
-        treebank,
-        hidden_size,
-        split,
-    ):
+        batches: Iterable[RemoteBatch],
+        layer: int,
+        rows: np.ndarray | pd.Index | list[int],
+        treebank: str,
+        hidden_size: int,
+        split: str,
+    ) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """Yield selected feature batches with positions aligned to requested rows.
+
+    Parameters
+    ----------
+    batches : Iterable[RemoteBatch]
+        Feature batches for one layer and split, with original word-table
+        row indices. Each source row is expected to occur only once.
+    layer : int
+        Layer index, used in validation error messages.
+    rows : np.ndarray | pd.Index | list[int]
+        Unique original word-table row indices to select. Their order defines
+        the positions returned alongside each feature batch.
+    treebank : str
+        Treebank registry key, used in validation error messages.
+    hidden_size : int
+        Expected feature dimension from the model registry.
+    split : str
+        Split name, used in validation error messages.
+
+    Yields
+    ------
+    tuple[np.ndarray, np.ndarray]
+        Integer positions into 'rows' and the corresponding float32 feature
+        matrix of shape (n_selected_in_batch, hidden_size). Batches without
+        selected rows are skipped; batches remain in source iteration order.
+
+    Raises
+    ------
+    ValueError
+        If selected features have the wrong dimension or nonfinite values,
+        or any requested row is missing when the iterator is exhausted.
+    """
 
     rows_index = pd.Index(rows)  # Rows indexes
     seen = np.zeros(len(rows_index), dtype=bool)  # Zeros array
@@ -168,18 +261,58 @@ def _select_features_iterator(
     return
 
 def _evaluate_probes(
-        model,
-        init,
-        pooling,
-        eval_treebank,
-        layer,
-        rows_index,
-        y_eval_dict,
-        fitted_probes,
-        hidden_size,
+        model: str,
+        init: str,
+        pooling: str,
+        eval_treebank: str,
+        layer: int,
+        rows_index: pd.Index,
+        y_eval_dict: dict[str, np.ndarray],
+        fitted_probes: dict[str, Probe],
+        hidden_size: int,
         *,
-        hf_source,
-    ):
+        hf_source: HfRangeSource,
+    ) -> tuple[dict[str, int], int]:
+    """Evaluate fitted probes on one test treebank and layer in feature batches.
+
+    Parameters
+    ----------
+    model : str
+        Model registry key used to locate the features.
+    init : str
+        Feature initialization, either 'pretrained' or 'random'.
+    pooling : str
+        Feature pooling mode: 'first', 'mean' or 'last'.
+    eval_treebank : str
+        Registry key of the treebank whose test split is evaluated.
+    layer : int
+        Layer index to read, including 0 for embeddings.
+    rows_index : pd.Index
+        Unique original word-table indices of valid evaluation rows.
+    y_eval_dict : dict[str, np.ndarray]
+        Integer class labels for each task, with one label per entry of
+        rows_index in the same order. Must include every fitted probe's task.
+    fitted_probes : dict[str, Probe]
+        Trained probes keyed by task name. Each probe predicts UPOS indices.
+    hidden_size : int
+        Expected feature dimension from the model registry.
+    hf_source : HfRangeSource
+        Remote repository source resolved to the experiment's fixed commit.
+
+    Returns
+    -------
+    tuple[dict[str, int], int]
+        Number of correct predictions per task and total evaluated rows.
+        Feature batches are converted to float32 and discarded after use.
+
+    Raises
+    ------
+    ValueError
+        If selected features are invalid, requested rows are missing, or
+        the evaluated row count differs from len(rows_index).
+    FileNotFoundError
+        If a required remote feature, metadata or word-table file is missing.
+    """
     batches = iter_remote_feature_batches(
         hf_source.repo_id,
         model,
@@ -216,6 +349,9 @@ def _evaluate_probes(
     
     return correct_pred_counter, total_predictions
 
+# -----------------------------------------------------------------------------
+# Public entry point: train and evaluate probes, then save the results.
+# -----------------------------------------------------------------------------
 
 def run_probing(
         model: str,
@@ -235,26 +371,68 @@ def run_probing(
 
     Parameters
     ----------
-    model, train_treebank : str
-        Registry keys. The training treebank must have train, dev and test splits.
-    probe, init, pooling : str
-        Probe architecture and feature configuration.
+    model : str
+        Model registry key; layer count, hidden size and kind come from its spec.
+    train_treebank : str
+        Training treebank registry key, with train, dev and test splits.
+    probe : str
+        Probe architecture: 'linear' or 'mlp'. A new probe is fitted for
+        each layer and task, with hyperparameters selected on dev.
+    init : str
+        Feature initialization: 'pretrained' or 'random'.
+    pooling : str
+        Feature pooling mode: 'first', 'mean' or 'last'.
     tasks : tuple[str, ...]
-        UPOS and/or control tasks.
+        Nonempty sequence of unique tasks: 'upos' and/or 'control'. Defaults
+        to both tasks. Control labels use the training treebank's distribution.
     eval_treebanks : tuple[str, ...] | None
-        Test treebanks; defaults to the training treebank and its language's PUD.
+        Nonempty sequence of unique test treebanks. None selects the training
+        treebank and its language's PUD; missing evaluation artifacts are skipped.
     layers : list[int] | None
-        Layers to probe; defaults to all layers including embeddings.
+        Unique layer indices in 0..L. None selects all layers, including embeddings.
     max_train_rows : int | None
-        Maximum number of valid training rows, or None for all valid rows.
+        Positive maximum number of valid training rows (default: 50000), or
+        None for all valid rows. One sample without replacement is shared by
+        all layers and tasks; dev and evaluation rows are not subsampled.
     seed : int
-        Sampling and probe seed. The shared control mapping uses seed 42.
+        Non-negative sampling and probe seed (default: 42). The shared control
+        mapping always uses seed 42, independently of this argument.
+    verbose : int
+        If nonzero, print per-layer evaluation accuracies and the output path.
+        Defaults to 0, which disables these progress messages.
 
     Returns
     -------
     pd.DataFrame
-        Results following CONTRACTS.md section 6, also written to parquet.
-        HLT_HF_REVISION selects the remote commit; HLT_HF_REPO selects the repo.
+        Results following CONTRACTS.md section 6, with one row per evaluation
+        treebank, task and layer for the given seed. The same frame overwrites
+        probing_result_path(model, train_treebank, probe, init, pooling).
+
+    Raises
+    ------
+    ValueError
+        If arguments or feature data are invalid, HLT_HF_REVISION is unset,
+        training features are capped when rebuilding control labels, or no
+        evaluation treebank remains available.
+    FileNotFoundError
+        If required training or development artifacts, or the remote revision,
+        are missing.
+    PermissionError
+        If access to the remote repository or its artifacts is denied.
+
+    Warns
+    -----
+    RuntimeWarning
+        When an evaluation treebank is skipped because an artifact is missing.
+        Any results already collected for that treebank are discarded.
+
+    Notes
+    -----
+    HLT_HF_REPO selects the remote repository (default: 'hlt-group11/features').
+    HLT_HF_REVISION is required and resolved to a fixed commit for the run.
+    Layer 0 defines the NaN mask shared by all layers; null UPOS rows are dropped.
+    Train and dev features are held for one layer at a time as float32 arrays;
+    evaluation features are streamed in batches.
     """
 
     # Initializations
@@ -411,9 +589,14 @@ def run_probing(
 
     del train_table, dev_table, eval_tables, upos_tag_counts, word_types
 
+    if verbose:
+        print("Training phase:")
+
     # Iteration over the hidden layers
     result_rows = []
     for layer in layers:
+        if verbose:
+            print(f"  Layer {layer}")
 
         # Pick data from HuggingFace repo
         split_features = {}
@@ -459,6 +642,9 @@ def run_probing(
             )
         del split_features
 
+        if verbose:
+            print("Evaluation phase:")
+
         # Evaluating probes
         for eval_treebank, (rows_index, y_eval_dict) in list(y_eval_data.items()):
             try:
@@ -482,7 +668,7 @@ def run_probing(
             
             # Outputs
             if verbose:
-                print(f"Layer {layer}, {eval_treebank}:", end=" ")
+                print(f"  Layer {layer}, {eval_treebank}:", end=" ")
             for task in tasks:
                 result_rows.append({
                     "model": model,
@@ -519,6 +705,4 @@ def run_probing(
     results = pd.DataFrame(result_rows, columns=list(_result_types)).astype(_result_types)
     results.to_parquet(output_path, index=False)
 
-    if verbose:
-        print(f" --- Output path: {output_path} --- ")
     return results

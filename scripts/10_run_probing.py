@@ -33,8 +33,8 @@ def _row_limit(value: str) -> int | None:
     return limit
 
 
-def _load_jobs(path: Path) -> list[dict]:
-    """Load YAML defaults and jobs, rejecting unknown or incomplete settings.
+def _load_jobs_from_yaml(path: Path) -> list[dict]:
+    """Load YAML file with defaults and jobs defined inside, rejecting unknown or incomplete settings.
 
     Parameters
     ----------
@@ -46,43 +46,67 @@ def _load_jobs(path: Path) -> list[dict]:
     list[dict]
         Job arguments, with each job taking precedence over defaults.
     """
+    # Save the content of the YAML file in config
     with path.open(encoding="utf-8") as file:
         config = yaml.safe_load(file)
+
+    # Case of bad format of YAML file
     if not isinstance(config, dict) or set(config) - {"defaults", "jobs"}:
         raise ValueError("Config must be a mapping with only 'defaults' and 'jobs'.")
-    defaults = config.get("defaults", {})
-    jobs = config.get("jobs")
-    if not isinstance(defaults, dict):
+    
+    # Initializations
+    jobs_params = config.get("jobs")
+    default_params = config.get("defaults", {})
+    allowed_params = set(REQUIRED_KEYS + OPTIONAL_KEYS)
+
+    # Validation of the data
+    if not isinstance(default_params, dict):
         raise ValueError("Config defaults must be a mapping.")
-    if not isinstance(jobs, list) or not jobs:
+    if not isinstance(jobs_params, list) or not jobs_params:
         raise ValueError("Config jobs must be a nonempty list.")
-    allowed = set(REQUIRED_KEYS + OPTIONAL_KEYS)
-    if set(defaults) - allowed:
-        raise ValueError(f"Unknown default keys: {set(defaults) - allowed}.")
+    if set(default_params) - allowed_params:
+        raise ValueError(f"Unknown default keys: {set(default_params) - allowed_params}.")
+    
+    # Each iteration creates the set of parameters of each job (= set of model's parameters)
     merged_jobs = []
     outputs = set()
-    for index, job in enumerate(jobs, start=1):
-        if not isinstance(job, dict) or set(job) - allowed:
+    for index, job_params in enumerate(jobs_params, start=1):
+        if not isinstance(job_params, dict) or set(job_params) - allowed_params:
             raise ValueError(f"Job {index} must be a mapping using supported runner arguments.")
-        merged = {**defaults, **job}
-        missing = [key for key in REQUIRED_KEYS if not isinstance(merged.get(key), str) or not merged[key]]
+        
+        merged_params = {**default_params, **job_params}
+
+        # Check of missing parameters
+        missing = [key for key in REQUIRED_KEYS if not isinstance(merged_params.get(key), str) or not merged_params[key]]
         if missing:
             raise ValueError(f"Job {index} requires string values for: {', '.join(missing)}.")
-        for key in ("tasks", "eval_treebanks", "layers"):
-            if key in merged and not (key != "tasks" and merged[key] is None):
-                if not isinstance(merged[key], list):
-                    raise ValueError(f"Job {index}: {key} must be a list.")
-        # The filename does not include tasks, layers or seed: avoid silent data loss.
-        output = tuple(merged[key] for key in REQUIRED_KEYS)
+        
+        # Checks of params that should have a list as value
+        for param in ("tasks", "eval_treebanks", "layers"):
+            if (
+                param in merged_params 
+                and not (param != "tasks" and merged_params[param] is None) 
+                and not isinstance(merged_params[param], list)
+            ):
+                raise ValueError(f"Job {index}: {param} must be a list.")
+        
+        # Check the overlapping of filepaths (based on the values associated with the required parameters)
+        output = tuple(merged_params[key] for key in REQUIRED_KEYS)
         if output in outputs:
             raise ValueError(f"Job {index} would overwrite another job's result file.")
         outputs.add(output)
-        merged_jobs.append(merged)
+
+        merged_jobs.append(merged_params)
+
     return merged_jobs
 
 
+############################################################
+########################## MAIN ############################
+############################################################
+
 def main(argv: list[str] | None = None) -> None:
-    """Parse CLI arguments, run experiments sequentially and print output paths."""
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path, help="YAML jobs; cannot be combined with individual job flags.")
     parser.add_argument("--model")
@@ -93,18 +117,21 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--tasks", nargs="+", choices=("upos", "control"))
     parser.add_argument("--eval-treebanks", nargs="+")
     parser.add_argument("--layers", type=int, nargs="+")
-    parser.add_argument("--max-train-rows", type=_row_limit, default=argparse.SUPPRESS,
-                        help="Positive integer (default: 50000), or 'none' for all rows.")
+    parser.add_argument("--max-train-rows", type=_row_limit, default=argparse.SUPPRESS, help="Positive integer (default: 50000), or 'none' for all rows.")
     parser.add_argument("--seed", type=int)
     parser.add_argument("--quiet", action="store_true", help="Only print job progress and output paths.")
     args = parser.parse_args(argv)
-    options = {key: value for key, value in vars(args).items()
-               if key in REQUIRED_KEYS + OPTIONAL_KEYS and (value is not None or key == "max_train_rows")}
+
+    options = {
+        arg: value for arg, value in vars(args).items()
+        if arg in REQUIRED_KEYS + OPTIONAL_KEYS and (value is not None or arg == "max_train_rows")
+    }
+
     if args.config:
         if options:
             parser.error("--config cannot be combined with individual job flags.")
         try:
-            jobs = _load_jobs(args.config)
+            jobs = _load_jobs_from_yaml(args.config)
         except (OSError, ValueError, yaml.YAMLError) as error:
             parser.error(str(error))
     else:
@@ -113,11 +140,14 @@ def main(argv: list[str] | None = None) -> None:
             parser.error(f"Required for a single job: {', '.join(missing)}.")
         jobs = [options]
 
-    for index, job in enumerate(jobs, start=1):
-        print(f"Job {index}/{len(jobs)}: {job}", flush=True)
+    n_jobs = len(jobs)
+    for i, job in enumerate(jobs, start=1):
+        print(f"Job {i}/{n_jobs}: {job}", end=" -> " if args.quiet else "\n", flush=True)
         run_probing(**job, verbose=0 if args.quiet else 1)
         path = probing_result_path(*(job[key] for key in REQUIRED_KEYS))
-        print(f"Wrote {path}", flush=True)
+        print(f"Wrote to {path}", flush=True)
+    
+    return
 
 
 if __name__ == "__main__":
