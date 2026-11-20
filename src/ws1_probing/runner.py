@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import warnings
@@ -127,6 +128,42 @@ def _scan_data(
     tables_df = pd.concat(table_parts)
 
     return tables_df, tag_counts, word_types
+
+
+def _complete_train_statistics(source: HfRangeSource, treebank: str) -> tuple[Counter[str], set[str]]:
+    """Read the UPOS counts and word types of the complete train word table.
+
+    Used when the train features are capped (``max_rows`` in ``meta.json``, mGPT): the
+    control mapping must come from the complete training split, like the one of every
+    other model, and the capped features only cover its first rows. The word table is
+    small (about 1 MB) and is read with one range request.
+
+    Parameters
+    ----------
+    source : HfRangeSource
+        Remote repository source resolved to a fixed commit.
+    treebank : str
+        Training treebank registry key.
+
+    Returns
+    -------
+    tuple[Counter[str], set[str]]
+        UPOS token counts and case-sensitive word types of the whole train split.
+
+    Raises
+    ------
+    ValueError
+        If a UPOS tag is null or unknown.
+    FileNotFoundError
+        If the word table is not in the repository.
+    """
+    path = f"data/processed/{treebank}_train.parquet"
+    table = pd.read_parquet(io.BytesIO(source.read(path, 0, source.size(path))), columns=["form", "upos"])
+    if table["upos"].isna().any():
+        raise ValueError("Control mapping requires non-null train UPOS.")
+    if not table["upos"].isin(UPOS_TAGS).all():
+        raise ValueError(f"Unknown UPOS labels in {treebank}/train.")
+    return Counter(table["upos"]), set(table["form"])
 
 
 def _build_control_mapping(
@@ -492,16 +529,13 @@ def run_probing(
         raise ValueError("Set HLT_HF_REVISION to the feature repository commit.")
     hf_source = HfRangeSource(repo_id, revision)
 
-    # A control mapping cannot be reconstructed from a possibly capped train split
+    # Capped train features (mGPT) only cover the first rows: the control mapping then comes from the complete word table
+    capped_train = False
     if "control" in tasks:
         meta_path = f"{model}/{init}/{pooling}/{train_treebank}_train/meta.json"
         meta = json.loads(hf_source.read(meta_path, 0, hf_source.size(meta_path)))
-        if meta.get("max_rows") is not None:
-            raise ValueError(
-                "Cannot rebuild control labels from capped training features. "
-                "Use a mapping built from the complete training word table."
-            )
-    
+        capped_train = meta.get("max_rows") is not None
+
     if verbose:
         print("Building datasets from HuggingFace repo...")
     
@@ -513,8 +547,10 @@ def run_probing(
         train_treebank,
         "train",
         source=hf_source,
-        collect_control_enabled="control" in tasks
+        collect_control_enabled="control" in tasks and not capped_train
     )
+    if capped_train:
+        upos_tag_counts, word_types = _complete_train_statistics(hf_source, train_treebank)
     if max_train_rows is not None and len(train_table) > max_train_rows:
         rng = np.random.default_rng(seed)
         drawn_positions = rng.choice(
