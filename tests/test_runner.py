@@ -15,7 +15,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from lib.control_tasks import build_control_mapping, control_labels
+from lib.control_tasks import build_control_mapping, control_labels, control_next_labels
 from lib.data import UPOS_TAGS
 from lib.paths import feature_dir, layer_path
 from lib.remote_features import RemoteBatch, iter_remote_feature_batches
@@ -158,9 +158,130 @@ def scan(dataset, split="train", collect_control=True):
                              source=dataset.source, collect_control_enabled=collect_control)
 
 
-def expected_labels(table, task, control):
-    labels = table["upos"] if task == "upos" else control_labels(table, control)
+def expected_labels(table, task, control, rows=None):
+    if task == "upos":
+        labels = table["upos"]
+    elif task == "upos_next":
+        labels = table["next_upos"]
+    elif task == "control":
+        labels = control_labels(table, control)
+    else:
+        labels = control_next_labels(table, control)
+    if rows is not None:
+        labels = labels.iloc[rows]
     return labels.map(TAG_IDS).to_numpy(dtype=np.int64)
+
+
+@pytest.mark.parametrize("sentence_lengths, expected_rows", [
+    ((3,), [0, 1]),
+    ((3, 1, 3), [0, 1, 4, 5]),
+])
+def test_next_tasks_use_successor_labels_within_each_sentence(dataset, sentence_lengths, expected_rows):
+    """Three words yield two examples; sentence endings and singletons yield none."""
+    n_rows = sum(sentence_lengths)
+    for (treebank, split), original in dataset.tables.items():
+        table = original.iloc[:n_rows].copy()
+        table["sent_id"] = [f"s{i}" for i, length in enumerate(sentence_lengths) for _ in range(length)]
+        table["word_idx"] = [i for length in sentence_lengths for i in range(length)]
+        table["upos"] = ["DET", "NOUN", "VERB", "INTJ", "ADJ", "PROPN", "PUNCT"][:n_rows]
+        table["next_upos"] = table.groupby("sent_id", sort=False)["upos"].shift(-1)
+        table.to_parquet(dataset.source.paths[f"data/processed/{treebank}_{split}.parquet"], index=False)
+        dataset.tables[(treebank, split)] = table
+        prefix = f"bert/pretrained/first/{treebank}_{split}"
+        meta_path = dataset.source.paths[f"{prefix}/meta.json"]
+        meta = json.loads(meta_path.read_text())
+        meta["n_rows"] = n_rows
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        for layer in (0, 1):
+            values = np.repeat(np.arange(n_rows, dtype=np.float16)[:, None], HIDDEN_SIZE, axis=1)
+            np.save(dataset.source.paths[f"{prefix}/layer_{layer:02d}.npy"], values)
+
+    results = run(tasks=("upos_next", "control_next"), layers=[0], max_train_rows=None)
+    assert (results.n_train == len(expected_rows)).all()
+    assert (results.n_eval == len(expected_rows)).all()
+    control = build_control_mapping(dataset.tables[("ewt", "train")])
+    for task, fit in zip(("upos_next", "control_next"), dataset.fits, strict=True):
+        for split, suffix in (("train", "train"), ("dev", "dev")):
+            np.testing.assert_array_equal(fit[f"X_{suffix}"][:, 0], expected_rows)
+            np.testing.assert_array_equal(fit[f"y_{suffix}"], expected_labels(
+                dataset.tables[("ewt", split)], task, control, expected_rows))
+    if sentence_lengths == (3,):
+        np.testing.assert_array_equal(dataset.fits[0]["y_train"], [TAG_IDS["NOUN"], TAG_IDS["VERB"]])
+    np.testing.assert_array_equal(
+        np.unique(np.concatenate(dataset.predictions)[:, 0]), expected_rows)
+
+
+@pytest.mark.parametrize("limit", [12, None])
+def test_next_tasks_preserve_targets_across_batches_nan_rows_and_sampling(dataset, limit):
+    """Compute targets before filtering: rows 1 and 6 target NaN rows 2 and 7.
+
+    Row 6 also targets the next batch; row 8 crosses a parquet row-group boundary.
+    """
+    tasks = ("upos_next", "control_next")
+    results = run(tasks=tasks, max_train_rows=limit, seed=19)
+    original = dataset.tables[("ewt", "train")]
+    valid = np.flatnonzero(original.next_upos.notna() & ~original.index.isin(NAN_ROWS))
+    expected_rows = valid
+    if limit is not None:
+        expected_rows = valid[np.random.default_rng(19).choice(len(valid), size=limit, replace=False)]
+    control = build_control_mapping(original, seed=42)
+    assert {1, 6, 8}.issubset(valid)
+    assert len(dataset.fits) == 4
+    for index, fit in enumerate(dataset.fits):
+        layer, task_index = divmod(index, 2)
+        for split, rows in (("train", expected_rows), ("dev", valid)):
+            np.testing.assert_array_equal(fit[f"X_{split}"], dataset.arrays[("ewt", split, layer)][rows])
+            np.testing.assert_array_equal(fit[f"y_{split}"], expected_labels(
+                dataset.tables[("ewt", split)], tasks[task_index], control, rows))
+            assert fit[f"X_{split}"].dtype == np.float32
+            assert fit[f"y_{split}"].dtype == np.int64
+    assert (results.n_train == len(expected_rows)).all()
+    assert (results.n_eval == len(valid)).all()
+    for row in results.itertuples():
+        table = dataset.tables[(row.eval_treebank, "test")]
+        truth = expected_labels(table, row.task, control, valid)
+        predictions = expected_labels(table, "upos", control, valid)
+        assert row.acc == float(np.mean(predictions == truth))
+    pd.testing.assert_frame_equal(pd.read_parquet(dataset.output), results)
+
+
+def test_current_and_next_tasks_keep_their_own_rows(dataset):
+    tasks = ("upos", "control", "upos_next", "control_next")
+    results = run(tasks=tasks, max_train_rows=None)
+    assert len(results) == 16
+    assert set(results.task) == set(tasks)
+    assert set(results.eval_treebank) == {"ewt", "pud_en"}
+    assert not results.duplicated(["eval_treebank", "task", "layer", "seed"]).any()
+    current_rows = np.setdiff1d(np.arange(N_ROWS), NAN_ROWS)
+    next_rows = current_rows[current_rows % 5 != 4]
+    control = build_control_mapping(dataset.tables[("ewt", "train")])
+    assert len(dataset.fits) == 8
+    for index, fit in enumerate(dataset.fits):
+        layer, task_index = divmod(index, 4)
+        task = tasks[task_index]
+        rows = next_rows if task.endswith("_next") else current_rows
+        for split in ("train", "dev"):
+            np.testing.assert_array_equal(fit[f"X_{split}"], dataset.arrays[("ewt", split, layer)][rows])
+            np.testing.assert_array_equal(fit[f"y_{split}"], expected_labels(
+                dataset.tables[("ewt", split)], task, control, rows))
+    for row in results.itertuples():
+        rows = next_rows if row.task.endswith("_next") else current_rows
+        assert row.n_train == row.n_eval == len(rows)
+        table = dataset.tables[(row.eval_treebank, "test")]
+        assert row.acc == float(np.mean(
+            expected_labels(table, "upos", control, rows) == expected_labels(table, row.task, control, rows)))
+    pd.testing.assert_frame_equal(pd.read_parquet(dataset.output), results)
+
+
+@pytest.mark.parametrize("tasks", [("upos_next",), ("control_next",), ("control_next", "upos_next")])
+def test_next_task_subsets_and_order(dataset, tasks):
+    results = run(tasks=tasks, layers=[1], eval_treebanks=("ewt",), max_train_rows=None)
+    assert results.task.tolist() == list(tasks)
+    control = build_control_mapping(dataset.tables[("ewt", "train")])
+    rows = [i for i in range(N_ROWS) if i not in NAN_ROWS and i % 5 != 4]
+    for task, fit in zip(tasks, dataset.fits, strict=True):
+        np.testing.assert_array_equal(fit["y_train"], expected_labels(
+            dataset.tables[("ewt", "train")], task, control, rows))
 
 
 @pytest.mark.parametrize("probe", ["linear", "mlp"])
@@ -234,17 +355,22 @@ def test_task_subsets_and_order(dataset, tasks):
 
 
 def test_scan_keeps_global_positions_and_all_control_statistics(dataset):
-    table, counts, forms = scan(dataset)
+    table, valid_features, counts, forms = scan(dataset)
     original = dataset.tables[("ewt", "train")]
-    valid = np.setdiff1d(np.arange(N_ROWS), NAN_ROWS)
-    pd.testing.assert_frame_equal(table, original.iloc[valid][["form", "upos"]])
+    # Scanning preserves all words, including those with invalid features.
+    columns = ["sent_id", "word_idx", "form", "upos", "next_upos"]
+    pd.testing.assert_frame_equal(table, original[columns])
+    expected_mask = np.ones(N_ROWS, dtype=bool)
+    expected_mask[NAN_ROWS] = False
+    np.testing.assert_array_equal(valid_features, expected_mask)
+    # Control statistics still cover the complete training table.
     assert counts == Counter(original.upos)
     assert forms == set(original.form)
     assert original.loc[2, "form"] in forms
     expected = build_control_mapping(original)
     expected["treebank"] = "ewt"
     assert runner._build_control_mapping("ewt", counts, forms) == expected
-    _, counts, forms = scan(dataset, split="dev", collect_control=False)
+    _, _, counts, forms = scan(dataset, split="dev", collect_control=False)
     assert not counts and not forms
 
 
@@ -261,8 +387,21 @@ def test_null_upos_is_dropped_without_control(dataset):
     table = dataset.tables[("ewt", "train")].copy()
     table.loc[1, "upos"] = None
     table.to_parquet(dataset.source.paths["data/processed/ewt_train.parquet"], index=False)
-    valid, _, _ = scan(dataset, collect_control=False)
-    assert len(valid) == 47 and 1 not in valid.index
+    scanned, valid_features, _, _ = scan(dataset, collect_control=False)
+    # Scanning preserves the word; its features are valid.
+    assert len(scanned) == N_ROWS
+    assert pd.isna(scanned.loc[1, "upos"])
+    assert valid_features[1]
+    # Task preparation excludes the null label and NaN feature rows.
+    labels = {"upos": runner._get_task_labels(scanned, "upos", None)}
+    task_data = runner._select_valid_data(labels, valid_features)
+    rows, targets = task_data["upos"]
+    expected_rows = np.setdiff1d(np.arange(N_ROWS), [1, *NAN_ROWS])
+    np.testing.assert_array_equal(rows, expected_rows)
+    np.testing.assert_array_equal(
+        targets,
+        table.loc[expected_rows, "upos"].map(TAG_IDS).to_numpy(dtype=np.int64),
+    )
 
 
 def test_no_valid_rows(dataset):
@@ -371,13 +510,14 @@ def test_permission_error_is_not_treated_as_missing_features(dataset):
         run()
 
 
-def test_capped_train_cannot_rebuild_control(dataset):
+@pytest.mark.parametrize("task", ["control", "control_next"])
+def test_capped_train_cannot_rebuild_control(dataset, task):
     path = dataset.source.paths["bert/pretrained/first/ewt_train/meta.json"]
     meta = json.loads(path.read_text())
     meta["max_rows"] = 50
     path.write_text(json.dumps(meta), encoding="utf-8")
     with pytest.raises(ValueError, match="capped"):
-        run()
+        run(tasks=(task,))
     assert not dataset.fits
 
 
@@ -457,12 +597,34 @@ jobs:
 def test_ws1_config_covers_required_jobs(scripts):
     cli, _ = scripts
     jobs = cli._load_jobs_from_yaml(Path(__file__).resolve().parents[1] / "configs" / "ws1.yaml")
-    assert {(job["model"], job["probe"], job["init"]) for job in jobs} == {
+    baseline_jobs = [job for job in jobs if job["pooling"] == "first" and job["model"] in ("bert", "distilbert", "gpt2")]
+    assert {(job["model"], job["probe"], job["init"]) for job in baseline_jobs} == {
         (model, probe, init) for model in ("bert", "distilbert", "gpt2")
         for probe in ("linear", "mlp") for init in ("pretrained", "random")
     }
-    assert len(jobs) == 12
-    assert all(job["tasks"] == ["upos", "control"] and job["pooling"] == "first" for job in jobs)
+    assert len(baseline_jobs) == 12
+    assert all({"upos", "control"}.issubset(job["tasks"]) for job in baseline_jobs)
+
+
+def test_ws1_config_covers_next_jobs(scripts):
+    cli, _ = scripts
+    jobs = cli._load_jobs_from_yaml(Path(__file__).resolve().parents[1] / "configs" / "ws1.yaml")
+    for model, train, pooling, pud in (
+        ("gpt2", "ewt", "last", "pud_en"),
+        ("bert", "ewt", "first", "pud_en"),
+        ("geppetto", "isdt", "last", "pud_it"),
+        ("bert_it", "isdt", "first", "pud_it"),
+    ):
+        matching = [job for job in jobs if (
+            job["model"], job["train_treebank"], job["pooling"], job["probe"], job["init"]
+        ) == (model, train, pooling, "linear", "pretrained")]
+        assert len(matching) == 1, f"Missing or duplicate P5 job for {model}."
+        job = matching[0]
+        assert {"upos_next", "control_next"}.issubset(job["tasks"])
+        if model in ("gpt2", "geppetto"):
+            assert {"upos", "control"}.issubset(job["tasks"])
+        assert job.get("eval_treebanks") is None or set(job["eval_treebanks"]) == {train, pud}
+        assert job.get("layers") is None or set(job["layers"]) == set(range(13))
 
 
 @pytest.mark.parametrize("content", [
@@ -514,6 +676,22 @@ def test_summary_missing_results_fails(scripts, tmp_path, monkeypatch):
     with pytest.raises(FileNotFoundError, match="No probing"):
         cli.main([])
     assert not (tmp_path / "results" / "summary").exists()
+
+
+def test_summary_contains_next_task_for_each_eval_treebank(dataset, scripts, monkeypatch):
+    from lib.metrics import summarize_probing
+
+    _, cli = scripts
+    root = dataset.output.parents[2]
+    monkeypatch.setattr(cli, "ROOT", root)
+    results = run(tasks=("upos", "control", "upos_next", "control_next"), max_train_rows=None)
+    cli.main([])
+    summary = pd.read_parquet(root / "results" / "summary" / "cog.parquet")
+    pd.testing.assert_frame_equal(summary, summarize_probing(results))
+    assert set(zip(summary.eval_treebank, summary.task)) == {
+        (treebank, task) for treebank in ("ewt", "pud_en") for task in ("upos", "upos_next")
+    }
+    assert len(summary) == 4
 
 
 def test_summary_missing_control_does_not_write(dataset, scripts, monkeypatch):

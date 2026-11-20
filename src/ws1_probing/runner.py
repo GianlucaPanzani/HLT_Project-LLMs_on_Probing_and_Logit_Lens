@@ -7,7 +7,7 @@ from collections.abc import Iterable, Iterator
 import numpy as np
 import pandas as pd
 
-from lib.control_tasks import control_labels
+from lib.control_tasks import control_labels, control_next_labels
 from lib.data import UPOS_TAGS
 from lib.paths import probing_result_path
 from lib.registry import get_model_spec, get_treebank_spec
@@ -44,8 +44,8 @@ def _scan_data(
     *,
     source: HfRangeSource,
     collect_control_enabled: bool = False
-) -> tuple[pd.DataFrame, Counter[str], set[str]]:
-    """Scan layer 0 to identify valid rows and optionally collect control statistics.
+) -> tuple[pd.DataFrame, np.ndarray, Counter[str], set[str]]:
+    """Scan layer 0, retaining all words and recording feature validity.
 
     Parameters
     ----------
@@ -67,22 +67,23 @@ def _scan_data(
 
     Returns
     -------
-    tuple[pd.DataFrame, Counter[str], set[str]]
-        The 'form' and 'upos' columns of rows with non-null UPOS and no NaN
-        features, indexed by their original word-table positions; UPOS counts;
-        and distinct word types. Counts and types are empty when collection
-        is disabled. Statistics cover all streamed rows, before filtering.
+    tuple[pd.DataFrame, np.ndarray, Counter[str], set[str]]
+        Complete streamed word table, indexed by original row positions;
+        boolean feature-validity mask aligned with the table's row order;
+        train UPOS counts; and distinct train word forms.
+        Counts and forms are empty when collection is disabled.
 
     Raises
     ------
     ValueError
         If a non-null UPOS tag is unknown, control statistics are requested
-        with null UPOS labels, or no valid rows remain.
+        with null UPOS labels, or no rows with valid features are available.
     FileNotFoundError
         If a required remote feature, metadata or word-table file is missing.
     """
 
     table_parts = []
+    feature_masks = []
     tag_counts = Counter()
     word_types = set()
 
@@ -100,7 +101,14 @@ def _scan_data(
     )
 
     for batch in batches:
-        table = batch.table[["form", "upos"]]
+        # Select the columns that, for each row/word, describe respectively:
+        # - sent_id: ID of the sentence containing the word,
+        # - word_idx: position of the word within the sentence (range [0,len(s))),
+        # - form: original word text,
+        # - upos: Universal Part-of-Speech tag of the current word,
+        # - next_upos: UPOS tag of the next word in the same sentence (null for the last word).
+        table = batch.table[["sent_id", "word_idx", "form", "upos", "next_upos"]].copy()
+        table.index = pd.Index(batch.rows)
 
         # Check if there are unknown labels
         unknown = table["upos"].notna() & ~table["upos"].isin(UPOS_TAGS)
@@ -114,19 +122,23 @@ def _scan_data(
             tag_counts.update(table["upos"])
             word_types.update(table["form"])
 
-        # Save only valid data (non-NaN data) from the whole table
-        valid = ~np.isnan(batch.features).any(axis=1) & table["upos"].notna().to_numpy()
-        if valid.any():
-            selected = table.iloc[np.flatnonzero(valid)].copy()
-            selected.index = batch.rows[valid]
-            table_parts.append(selected)
+        # Keep all words without filtering them
+        table_parts.append(table)
 
-    # Build the Dataframe
+        # Record feature validity separately from label validity
+        valid = ~np.isnan(batch.features).any(axis=1)
+        feature_masks.append(valid)
+
     if not table_parts:
         raise ValueError(f"No valid rows for {treebank}/{split}.")
+    
     tables_df = pd.concat(table_parts)
+    valid_features = np.concatenate(feature_masks)
 
-    return tables_df, tag_counts, word_types
+    if not valid_features.any():
+        raise ValueError(f"No valid rows for {treebank}/{split}.")
+
+    return tables_df, valid_features, tag_counts, word_types
 
 
 def _build_control_mapping(
@@ -349,6 +361,104 @@ def _evaluate_probes(
     
     return correct_pred_counter, total_predictions
 
+
+def _get_task_labels(
+    table: pd.DataFrame,
+    task: str,
+    control: dict | None,
+) -> pd.Series:
+    """Get task labels before filtering or sampling word rows.
+
+    Parameters
+    ----------
+    table : pd.DataFrame
+        Complete word table in original sentence and word order.
+    task : str
+        One of 'upos', 'control', 'upos_next' or 'control_next'.
+    control : dict or None
+        Training control mapping; required for control tasks.
+
+    Returns
+    -------
+    pd.Series
+        Labels aligned with the table index, retaining null targets.
+    """
+    if task == "upos":
+        return table["upos"]
+    if task == "upos_next":
+        return table["next_upos"]
+
+    if task in ("control", "control_next"):
+        if control is None:
+            raise ValueError(f"Task '{task}' requires a control mapping.")
+        if task == "control":
+            return control_labels(table, control)
+        return control_next_labels(table, control)
+
+    raise ValueError(f"Unknown task: '{task}'.")
+
+
+def _select_valid_data(
+    labels_by_task: dict[str, pd.Series],
+    valid_features: np.ndarray,
+    *,
+    max_rows: int | None = None,
+    seed: int = 42,
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Select valid word rows and encode labels, sharing rows within task pairs.
+
+    Parameters
+    ----------
+    labels_by_task : dict[str, pd.Series]
+        Task labels computed on the complete table, with original row indices.
+    valid_features : np.ndarray
+        Boolean feature-validity mask aligned with the label series.
+    max_rows : int or None
+        Maximum selected rows per task pair; None keeps all valid rows.
+    seed : int
+        Seed for reproducible sampling without replacement.
+
+    Returns
+    -------
+    dict[str, tuple[np.ndarray, np.ndarray]]
+        Each task maps to original word-table row indices and integer labels,
+        both in the same order.
+    """
+    task_data = {}
+    tag_to_id = {tag: i for i, tag in enumerate(UPOS_TAGS)}
+
+    for task_pair in (("upos", "control"), ("upos_next", "control_next")):
+        active_tasks = [task for task in task_pair if task in labels_by_task]
+        if not active_tasks:
+            continue
+
+        # Use the same valid rows for the task and its control
+        valid = valid_features.copy()
+        for task in active_tasks:
+            labels = labels_by_task[task]
+            unknown = labels.notna() & ~labels.isin(UPOS_TAGS)
+            if unknown.any():
+                raise ValueError(f"Unknown UPOS labels for task '{task}'.")
+            valid &= labels.notna().to_numpy()
+
+        valid_positions = np.flatnonzero(valid)
+        if len(valid_positions) == 0:
+            raise ValueError(f"No valid rows for tasks {active_tasks}.")
+
+        # Sampling on valid rows once per pair
+        if max_rows is not None and len(valid_positions) > max_rows:
+            rng = np.random.default_rng(seed)
+            valid_positions = rng.choice(valid_positions, size=max_rows, replace=False)
+
+        for task in active_tasks:
+            selected_labels = labels_by_task[task].iloc[valid_positions]
+            selected_rows = selected_labels.index.to_numpy(dtype=np.int64)
+
+            labels_ids = selected_labels.map(tag_to_id).to_numpy(dtype=np.int64)
+            task_data[task] = (selected_rows, labels_ids)
+
+    return task_data
+
 # -----------------------------------------------------------------------------
 # Public entry point: train and evaluate probes, then save the results.
 # -----------------------------------------------------------------------------
@@ -383,17 +493,18 @@ def run_probing(
     pooling : str
         Feature pooling mode: 'first', 'mean' or 'last'.
     tasks : tuple[str, ...]
-        Nonempty sequence of unique tasks: 'upos' and/or 'control'. Defaults
-        to both tasks. Control labels use the training treebank's distribution.
+        Nonempty sequence of unique tasks: 'upos', 'control', 'upos_next'
+        or 'control_next'. Defaults to ('upos', 'control').
     eval_treebanks : tuple[str, ...] | None
         Nonempty sequence of unique test treebanks. None selects the training
         treebank and its language's PUD; missing evaluation artifacts are skipped.
     layers : list[int] | None
         Unique layer indices in 0..L. None selects all layers, including embeddings.
     max_train_rows : int | None
-        Positive maximum number of valid training rows (default: 50000), or
-        None for all valid rows. One sample without replacement is shared by
-        all layers and tasks; dev and evaluation rows are not subsampled.
+        Positive maximum number of valid training rows per task pair
+        (default: 50000), or None for all valid rows. Sampling is shared
+        within each task/control pair and across layers.
+        Dev and evaluation rows are not subsampled.
     seed : int
         Non-negative sampling and probe seed (default: 42). The shared control
         mapping always uses seed 42, independently of this argument.
@@ -466,10 +577,17 @@ def run_probing(
         raise ValueError("init should be pretrained or random.")
     if pooling not in ["first", "last", "mean"]:
         raise ValueError("pooling should be first, last, or mean.")
-    if not tasks or any(task not in ("upos", "control") for task in tasks):
-        raise ValueError("tasks must contain only 'upos' and 'control'.")
+    allowed_tasks = ("upos", "control", "upos_next", "control_next")
+    if not tasks or any(task not in allowed_tasks for task in tasks):
+        raise ValueError(f"tasks must contain only values from {allowed_tasks}.")
     if len(set(tasks)) != len(tasks):
         raise ValueError("tasks must not contain duplicates.")
+    if (
+        model_spec["kind"] == "decoder" 
+        and ("upos_next" in tasks or "control_next" in tasks)  # has a next task
+        and pooling != "last"
+    ):
+        raise ValueError("Next-word tasks require pooling='last' for decoders.")
     if layers is None:
         layers = list(range(model_spec["num_layers"] + 1))
     if not layers:
@@ -493,7 +611,8 @@ def run_probing(
     hf_source = HfRangeSource(repo_id, revision)
 
     # A control mapping cannot be reconstructed from a possibly capped train split
-    if "control" in tasks:
+    control_is_needed = "control" in tasks or "control_next" in tasks
+    if control_is_needed:
         meta_path = f"{model}/{init}/{pooling}/{train_treebank}_train/meta.json"
         meta = json.loads(hf_source.read(meta_path, 0, hf_source.size(meta_path)))
         if meta.get("max_rows") is not None:
@@ -505,33 +624,28 @@ def run_probing(
     if verbose:
         print("Building datasets from HuggingFace repo...")
     
-    # Build training data
-    train_table, upos_tag_counts, word_types = _scan_data(
+    # Read all training words (keep feature validity separate)
+    train_table, train_valid_features, upos_tag_counts, word_types = _scan_data(
         model,
         init,
         pooling,
         train_treebank,
         "train",
         source=hf_source,
-        collect_control_enabled="control" in tasks
+        collect_control_enabled=control_is_needed,
     )
-    if max_train_rows is not None and len(train_table) > max_train_rows:
-        rng = np.random.default_rng(seed)
-        drawn_positions = rng.choice(
-            len(train_table),
-            size=max_train_rows,
-            replace=False,
-        )
-        train_table = train_table.iloc[drawn_positions].copy()
-    train_rows = train_table.index.to_numpy(dtype=np.int64)
 
-    # Build the control tags map
+    # Build the control mapping from the complete training statistics.
     control = None
-    if "control" in tasks:
-        control = _build_control_mapping(train_treebank, upos_tag_counts, word_types)
+    if control_is_needed:
+        control = _build_control_mapping(
+            train_treebank,
+            upos_tag_counts,
+            word_types,
+        )
     
     # Build development data
-    dev_table, _, _ = _scan_data(
+    dev_table, dev_valid_features, _, _ = _scan_data(
         model,
         init,
         pooling,
@@ -539,58 +653,63 @@ def run_probing(
         "dev",
         source=hf_source
     )
-    dev_rows = dev_table.index.to_numpy(dtype=np.int64)
 
     # Build testing data
-    eval_tables = {}
+    eval_tables_dict = {}
+    eval_valid_features_dict = {}
     for eval_treebank in eval_treebanks:
         try:
+            # Check missing layers before fitting any probes
             for layer in layers:
-                # Check missing layers before fitting any probes
                 path = f"{model}/{init}/{pooling}/{eval_treebank}_test/layer_{layer:02d}.npy"
                 hf_source.size(path)
                 
-                # Build testing table
-                eval_table, _, _ = _scan_data(
-                    model,
-                    init,
-                    pooling,
-                    eval_treebank,
-                    "test",
-                    source=hf_source
-                )
+            # Build testing table
+            eval_table, eval_valid_features, _, _ = _scan_data(
+                model,
+                init,
+                pooling,
+                eval_treebank,
+                "test",
+                source=hf_source
+            )
         except FileNotFoundError as error:
             warnings.warn(f"Skipping {eval_treebank}: {error}", RuntimeWarning, stacklevel=2)
             continue
 
-        eval_tables[eval_treebank] = eval_table
+        eval_tables_dict[eval_treebank] = eval_table
+        eval_valid_features_dict[eval_treebank] = eval_valid_features
 
-    # Build the integer labels for each dataset (train, dev and test)
-    tag_to_id_map = {tag: i for i, tag in enumerate(UPOS_TAGS)}
-    y_train = {}
-    y_dev = {}
-    y_eval_data = {treebank: (pd.Index(table.index), {}) for treebank, table in eval_tables.items()}
-    for task in tasks:
-        if task == "upos":
-            train_labels = train_table["upos"]
-            dev_labels = dev_table["upos"]
-        if task == "control":
-            train_labels = control_labels(train_table, control)
-            dev_labels = control_labels(dev_table, control)
-        y_train[task] = train_labels.map(tag_to_id_map).to_numpy(dtype=np.int64)
-        y_dev[task] = dev_labels.map(tag_to_id_map).to_numpy(dtype=np.int64)
-        for eval_treebank, eval_table in eval_tables.items():
-            if task == "upos":
-                eval_labels = eval_table["upos"]
-            if task == "control":
-                eval_labels = control_labels(eval_table, control)
-            y_eval_data[eval_treebank][1][task] = eval_labels.map(tag_to_id_map).to_numpy(dtype=np.int64)
-            del eval_table
-
-    if not y_eval_data:
+    if not eval_tables_dict:
         raise ValueError("No evaluation treebank with available features remains.")
 
-    del train_table, dev_table, eval_tables, upos_tag_counts, word_types
+    # Compute labels for all the tables
+    train_labels_dict = {}
+    dev_labels_dict = {}
+    eval_labels_dict = {treebank: {} for treebank in eval_tables_dict}
+    for task in tasks:
+        train_labels_dict[task] = _get_task_labels(train_table, task, control)
+        dev_labels_dict[task] = _get_task_labels(dev_table, task, control)
+        for eval_treebank, eval_table in eval_tables_dict.items():
+            eval_labels_dict[eval_treebank][task] = _get_task_labels(eval_table, task, control)
+
+    # Select valid rows for all the datasets
+    train_data = _select_valid_data(
+        train_labels_dict,
+        train_valid_features,
+        max_rows=max_train_rows,
+        seed=seed,
+    )
+    dev_data = _select_valid_data(
+        dev_labels_dict,
+        dev_valid_features,
+    )
+    eval_data = {}
+    for eval_treebank in eval_tables_dict:
+        eval_data[eval_treebank] = _select_valid_data(
+            eval_labels_dict[eval_treebank],
+            eval_valid_features_dict[eval_treebank],
+        )
 
     if verbose:
         print("Training phase:")
@@ -599,73 +718,86 @@ def run_probing(
     result_rows = []
     for layer in layers:
         if verbose:
-            print(f"  Layer {layer}")
+            print(f"  Layer {layer}", end=" ")
 
-        # Pick data from HuggingFace repo
-        split_features = {}
-        for split, rows in (("train", train_rows), ("dev", dev_rows)):
-            n_rows = len(rows)
-
-            batches = iter_remote_feature_batches(
-                repo_id,
-                model,
-                init,
-                pooling,
-                train_treebank,
-                split,
-                layer,
-                revision=hf_source.revision,
-                source=hf_source,
-            )
-
-            selected_features_iterator = _select_features_iterator(
-                batches,
-                layer,
-                rows=rows,
-                treebank=train_treebank,
-                hidden_size=model_spec["hidden_size"],
-                split=split,
-            )
-
-            selected_features = np.empty((n_rows, model_spec["hidden_size"]), dtype=np.float32)  # Empty NumPy array
-            for positions, features in selected_features_iterator:
-                selected_features[positions] = features
-            split_features[split] = selected_features
-
-            del selected_features
-
-        # Training probes (for both "upos" and "control" if needed)
+        # Train each task using its selected word rows and aligned targets
         fitted_probes = {}
         for task in tasks:
-            fitted_probes[task] = probe_model(seed=seed).fit(
-                split_features["train"],
-                y_train[task],
-                split_features["dev"],
-                y_dev[task]
-            )
-        del split_features
+            X_train_rows, y_train = train_data[task]
+            X_dev_rows, y_dev = dev_data[task]
 
-        if verbose:
-            print("  Evaluation phase:")
+            # Load the selected train and dev features for this layer and task.
+            features_split = {}
+            for split, rows in (("train", X_train_rows), ("dev", X_dev_rows)):
+                hidden_size = model_spec["hidden_size"]
+                selected_features = np.empty((len(rows), hidden_size), dtype=np.float32)
 
-        # Evaluating probes
-        for eval_treebank, (rows_index, y_eval_dict) in list(y_eval_data.items()):
-            try:
-                correct_pred_counter, total_predictions = _evaluate_probes(
+                batches = iter_remote_feature_batches(
+                    repo_id,
                     model,
                     init,
                     pooling,
-                    eval_treebank, 
+                    train_treebank,
+                    split,
                     layer,
-                    rows_index, 
-                    y_eval_dict, 
-                    fitted_probes,
-                    hidden_size=model_spec["hidden_size"],
-                    hf_source=hf_source,
+                    revision=hf_source.revision,
+                    source=hf_source,
                 )
+                
+                selected_features_iterator = _select_features_iterator(
+                    batches,
+                    layer,
+                    rows=rows,
+                    treebank=train_treebank,
+                    hidden_size=hidden_size,
+                    split=split,
+                )
+                for positions, features in selected_features_iterator:
+                    selected_features[positions] = features
+                
+                # Store the features which will be used for that split
+                features_split[split] = selected_features
+                del selected_features
+
+            # Training of the probe model with the split created
+            fitted_probes[task] = probe_model(seed=seed).fit(
+                features_split["train"],
+                y_train,
+                features_split["dev"],
+                y_dev,
+            )
+            del features_split
+
+        if verbose:
+            print(" trained")
+            print("  Evaluation phase:")
+
+        # Evaluate each task on its selected test rows.
+        for eval_treebank, task_data in list(eval_data.items()):
+            task_scores = {}
+
+            try:
+                for task in tasks:
+                    X_eval_rows, y_eval = task_data[task]
+
+                    correct_pred_counter, total_predictions = _evaluate_probes(
+                        model,
+                        init,
+                        pooling,
+                        eval_treebank,
+                        layer,
+                        rows_index=pd.Index(X_eval_rows),
+                        y_eval_dict={task: y_eval},
+                        fitted_probes={task: fitted_probes[task]},
+                        hidden_size=model_spec["hidden_size"],
+                        hf_source=hf_source,
+                    )
+
+                    task_scores[task] = (correct_pred_counter[task], total_predictions)
+
             except FileNotFoundError as error:
                 warnings.warn(f"Skipping {eval_treebank}: {error}", RuntimeWarning, stacklevel=2)
-                del y_eval_data[eval_treebank]
+                del eval_data[eval_treebank]
                 result_rows = [row for row in result_rows if row["eval_treebank"] != eval_treebank]
                 continue
             
@@ -673,6 +805,9 @@ def run_probing(
             if verbose:
                 print(f"    Layer {layer}, {eval_treebank}:", end=" ")
             for task in tasks:
+                correct_predictions, total_predictions = task_scores[task]
+                accuracy = correct_predictions / total_predictions
+
                 result_rows.append({
                     "model": model,
                     "train_treebank": train_treebank,
@@ -686,20 +821,20 @@ def run_probing(
                     "layer": layer,
                     "L": model_spec["num_layers"],
                     "tau": layer / model_spec["num_layers"],
-                    "acc": correct_pred_counter[task] / total_predictions,
-                    "n_train": len(train_rows),
+                    "acc": accuracy,
+                    "n_train": len(train_data[task][0]),
                     "n_eval": total_predictions,
                     "hparams": json.dumps(fitted_probes[task].hparams, sort_keys=True),
                     "seed": seed,
                 })
                 if verbose:
-                    print(f"{task}={correct_pred_counter[task] / total_predictions:.4f}", end=" ")
+                    print(f"{task}={accuracy:.4f}", end=" ")
             if verbose:
                 print()
 
         del fitted_probes
 
-        if not y_eval_data:
+        if not eval_data:
             raise ValueError("No evaluation treebank with available features remains.")
 
     # Create results path
