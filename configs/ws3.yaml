@@ -5,7 +5,7 @@
 # X2 (#28): the same frozen multilingual encoder on English and Italian.
 #   train ewt  -> evaluated on ewt test and pud_en
 #   train isdt -> evaluated on isdt test and pud_it
-# X3 (#29) adds mgpt jobs below the mbert ones.
+# X3 (#29): the same for the multilingual decoder mgpt (jobs below the mbert ones).
 defaults:
   pooling: first
   tasks: [upos, control]
@@ -21,6 +21,18 @@ jobs:
     init: pretrained
 
   - model: mbert
+    train_treebank: isdt
+    probe: linear
+    init: pretrained
+
+  # X3 (#29): the multilingual decoder (24 layers, d = 2048). Its train features were capped at
+  # 50,000 rows (the first rows of the treebank, see meta.json), the same max_train_rows as above.
+  - model: mgpt
+    train_treebank: ewt
+    probe: linear
+    init: pretrained
+
+  - model: mgpt
     train_treebank: isdt
     probe: linear
     init: pretrained
