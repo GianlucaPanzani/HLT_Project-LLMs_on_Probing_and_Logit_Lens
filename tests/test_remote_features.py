@@ -397,6 +397,16 @@ def test_hf_source_errors_have_clear_messages_without_details():
         HfRangeSource("t/f", "main", repo_type="nope", fs=FakeFileSystem(), api=api)
 
 
+@pytest.mark.parametrize("status,expected", [
+    (499, TransientReadError), (503, TransientReadError), (524, TransientReadError),
+    (401, PermissionError), (403, PermissionError), (404, FileNotFoundError), (400, OSError),
+])
+def test_http_status_mapping(status, expected):
+    error = type("HttpError", (Exception,), {"response": type("Response", (), {"status_code": status})()})()
+    translated = HfRangeSource._translate(error, "file")
+    assert type(translated) is expected
+
+
 @pytest.mark.slow
 def test_integration_small_range_from_private_repository():
     """Reads 64 rows from a pinned private revision. Set HLT_HF_TEST_REPO and HLT_HF_TEST_REVISION (a commit hash)."""

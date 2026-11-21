@@ -64,7 +64,8 @@ HEADER_PROBE_BYTES = 1024
 
 FEATURE_DTYPE = np.dtype("<f2")
 REPO_TYPE_PREFIX = {"dataset": "datasets", "model": "models", "space": "spaces"}
-_TRANSIENT_STATUS = {408, 429, 500, 502, 503, 504}
+_TRANSIENT_STATUS = {408, 429, 499, 500, 502, 503, 504, 520, 521, 522, 523, 524}
+"""HTTP statuses worth retrying (499 and 52x are returned by proxies and CDNs when a connection drops)."""
 _NETWORK_ERRORS: tuple[type[BaseException], ...] = tuple(
     error
     for error in (
@@ -340,7 +341,7 @@ def _make_retry(max_retries: int, retry_delay: float) -> Callable[[Callable[[], 
                 if attempt == max_retries:
                     raise ConnectionError(f"Remote read failed after {max_retries} retries: {error}") from None
                 logger.warning("Retrying remote read (%d/%d): %s", attempt + 1, max_retries, error)
-                time.sleep(retry_delay)
+                time.sleep(retry_delay * 2**attempt)  # exponential backoff
         raise AssertionError("unreachable")
 
     return retry
@@ -427,7 +428,7 @@ def iter_remote_feature_batches(
     max_retries : int
         Retries of a failed read before giving up. Defaults to 3.
     retry_delay : float
-        Seconds between retries. Defaults to 1.0.
+        Seconds before the first retry; doubled at every further retry. Defaults to 1.0.
     source : RangeSource | None
         Byte transport. Defaults to ``HfRangeSource(repo_id, revision, repo_type)``.
 
