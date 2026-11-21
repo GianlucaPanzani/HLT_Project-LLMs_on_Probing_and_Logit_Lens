@@ -371,14 +371,36 @@ def test_permission_error_is_not_treated_as_missing_features(dataset):
         run()
 
 
-def test_capped_train_cannot_rebuild_control(dataset):
+def test_capped_train_builds_control_from_the_complete_word_table(dataset):
+    """Capped train features (mGPT): the control mapping is the one of the complete train split."""
+    full = run()
+    path = dataset.source.paths["bert/pretrained/first/ewt_train/meta.json"]
+    meta = json.loads(path.read_text())
+    meta["max_rows"] = 30
+    meta["n_rows"] = 30
+    path.write_text(json.dumps(meta), encoding="utf-8")
+    for layer in (0, 1):
+        array_path = dataset.source.paths[f"bert/pretrained/first/ewt_train/layer_{layer:02d}.npy"]
+        np.save(array_path, np.load(array_path)[:30])
+    dataset.fits.clear()
+    capped = run()
+
+    table = dataset.tables[("ewt", "train")]
+    counts, types = runner._complete_train_statistics(dataset.source, "ewt")
+    assert counts == Counter(table["upos"]) and types == set(table["form"])  # all 50 rows, not the first 30
+    valid = int((~np.isnan(dataset.arrays[("ewt", "train", 0)][:30]).any(axis=1)).sum())
+    assert set(capped["n_train"]) == {valid} and valid < 30  # the capped rows, without their NaN rows
+    assert list(capped.columns) == list(full.columns) and len(capped) == len(full)
+    control_rows = capped[capped["task"] == "control"]
+    assert control_rows["acc"].notna().all()
+
+
+def test_capped_train_without_control_needs_no_word_table(dataset):
     path = dataset.source.paths["bert/pretrained/first/ewt_train/meta.json"]
     meta = json.loads(path.read_text())
     meta["max_rows"] = 50
     path.write_text(json.dumps(meta), encoding="utf-8")
-    with pytest.raises(ValueError, match="capped"):
-        run()
-    assert not dataset.fits
+    assert len(run(tasks=("upos",))) > 0
 
 
 def test_missing_revision_fails_before_opening_source(dataset, monkeypatch):
