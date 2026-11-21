@@ -8,7 +8,7 @@ import warnings
 import numpy as np
 import pytest
 
-from ws2_compression.cka import linear_cka, sample_rows
+from ws2_compression.cka import cka_matrix, linear_cka, sample_rows
 
 # ------------------------------------------------------------------ #
 # Fixtures
@@ -224,4 +224,63 @@ class TestSampleRows:
     def test_1d_requirement(self):
         with pytest.raises(ValueError, match="1-D"):
             sample_rows(np.ones((5, 5), dtype=bool), 3)
+
+
+# ------------------------------------------------------------------ #
+# cka_matrix: full layer-pair CKA matrix (issue C3, #17)
+# ------------------------------------------------------------------ #
+
+class TestCkaMatrix:
+    """Tests for full layer-pair CKA matrix generation."""
+
+    @pytest.fixture()
+    def mock_loaders(self):
+        rng = np.random.default_rng(42)
+        n_rows, hidden_dim = 100, 32
+
+        # Model A: 12 layers (0..12), Model B: 6 layers (0..6)
+        data_a = {la: rng.standard_normal((n_rows, hidden_dim)) for la in range(13)}
+        # Model B layers correlate with Model A layers
+        data_b = {lb: data_a[2 * lb] + 0.1 * rng.standard_normal((n_rows, hidden_dim)) for lb in range(7)}
+
+        def mock_meta(model, init, pooling, treebank, split):
+            if model == "bert":
+                return {"num_layers": 12, "hidden_dim": hidden_dim}
+            elif model == "distilbert":
+                return {"num_layers": 6, "hidden_dim": hidden_dim}
+            raise ValueError(f"Unknown model {model}")
+
+        def mock_layer(model, init, pooling, treebank, split, layer):
+            if model == "bert":
+                return data_a[layer]
+            elif model == "distilbert":
+                return data_b[layer]
+            raise ValueError(f"Unknown model {model}")
+
+        return mock_meta, mock_layer
+
+    def test_matrix_shape_and_columns(self, mock_loaders):
+        mock_meta, mock_layer = mock_loaders
+        df = cka_matrix(
+            "bert", "distilbert",
+            n_tokens=50, seed=42,
+            _load_meta=mock_meta, _load_layer=mock_layer,
+        )
+        assert len(df) == 13 * 7  # 91 layer pairs
+        assert list(df.columns) == ["layer_a", "layer_b", "cka", "n_tokens", "seed"]
+        assert (df["cka"] >= 0.0).all() and (df["cka"] <= 1.0 + 1e-6).all()
+        assert (df["n_tokens"] == 50).all()
+
+    def test_self_similarity_diagonal(self, mock_loaders):
+        mock_meta, mock_layer = mock_loaders
+        df = cka_matrix(
+            "bert", "bert",
+            n_tokens=50, seed=42,
+            _load_meta=mock_meta, _load_layer=mock_layer,
+        )
+        assert len(df) == 13 * 13
+        diag = df[df["layer_a"] == df["layer_b"]]
+        for _, row in diag.iterrows():
+            assert pytest.approx(row["cka"], abs=1e-5) == 1.0
+
 
