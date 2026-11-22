@@ -6,6 +6,7 @@
 #   train ewt  -> evaluated on ewt test and pud_en
 #   train isdt -> evaluated on isdt test and pud_it
 # X3 (#29): the same for the multilingual decoder mgpt (jobs below the mbert ones).
+# X4 (#30): paired monolinguals — bert (ewt, from #12) vs bert_it; gpt2 vs geppetto (isdt here).
 defaults:
   pooling: first
   tasks: [upos, control]
@@ -33,6 +34,16 @@ jobs:
     init: pretrained
 
   - model: mgpt
+    train_treebank: isdt
+    probe: linear
+    init: pretrained
+
+  - model: bert_it
+    train_treebank: isdt
+    probe: linear
+    init: pretrained
+
+  - model: geppetto
     train_treebank: isdt
     probe: linear
     init: pretrained
