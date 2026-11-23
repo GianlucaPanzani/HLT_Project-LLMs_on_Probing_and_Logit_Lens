@@ -74,11 +74,12 @@ Reference speed on the GTX 1650 Ti: about 100 sentences/s for BERT-base and GPT-
 
 ## 5. Italian and multilingual runs (E6, issue #8)
 
-**Status: not run yet.** The runs below need a machine with a GPU and enough free disk (about 53 GB with the mGPT cap).
-They were not run on the team's 8 GB RAM Mac (16 to 21 GB of free disk, and mGPT does not fit comfortably in 8 GB of RAM); do not try there.
-Whoever runs them reports in #8 with the table printed by `04_report_features.py` (see "Report").
+**Status: done (issue #8, results in a comment of #8).** All 28 folders (bert_it 4, geppetto 8, mbert 8, mgpt 8) were extracted on an
+NVIDIA GeForce RTX 4080 SUPER and uploaded to the Hugging Face repository `hlt-group11/features` (section 3). The runs need a machine with a GPU and enough
+free disk (about 53 GB with the mGPT cap); they were not run on the team's 8 GB RAM Mac (16 to 21 GB of free disk), and mGPT does not fit comfortably in 8 GB of RAM.
+The rest of this section is the runbook, kept to redo or extend the runs; paste the table of `04_report_features.py` in the issue (see "Report").
 
-Expected result for every run: `n_nan_rows = 0` and `n_truncated_sentences = 0`. The Italian alignment was checked in X1
+Result for every run: `n_nan_rows = 0` and `n_truncated_sentences = 0`, as expected. The Italian alignment was checked in X1
 ([ws3_italian_notes.md](results/ws3_italian_notes.md)): every ISDT and PUD IT word gets at least one subword with all four
 tokenizers, and the longest sequence is 403 positions (mBERT, ISDT train) against a limit of 512. A different result is a bug: report it in #8.
 
@@ -97,8 +98,9 @@ PYTHONPATH=src python scripts/04_report_features.py --models bert_it            
 
 Order follows what each run unblocks. Every line covers all splits of the treebank (`train`, `dev`, `test`; PUD only `test`) unless a `--split` is given.
 Disk is exact (`rows x (L + 1) x d x 2 bytes`; 12-layer models 19,968 bytes per row, mGPT 102,400 bytes per row).
-Time: 12-layer models run at about 100 sentences/s on a GTX 1650 Ti (section 4), so ISDT train (13,121 sentences) is a few minutes per run;
-mGPT was **not measured**: it has about 10 times the parameters of GPT-2, so expect roughly 10 times slower than the 12-layer models on a GPU, and much slower on CPU.
+Time, measured on the RTX 4080 SUPER: about 5,100 rows/s for the 12-layer models (ISDT train, 276,014 rows, in 54 s) and about 1,700 rows/s for mGPT
+with `--batch-size 4` (capped EWT train, 49,986 rows, in 30 s), so the whole of E6 took minutes of compute. Per run times are in the report of #8.
+On the GTX 1650 Ti of section 4 the 12-layer models are about 2.5 times slower; mGPT was not run there and is much slower on CPU.
 
 | Step | Command (`--init pretrained` is the default) | Disk | Unblocks |
 | :-- | :-- | --: | :-- |

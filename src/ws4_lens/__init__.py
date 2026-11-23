@@ -1,5 +1,10 @@
 """Workstream 4: Decoder Lens Spectrum & Probing Integration."""
 
+from ws4_lens.evaluate import (
+    evaluate_lenses,
+    prepare_pud_batches,
+    prepare_wikitext_batches,
+)
 from ws4_lens.jacobian_lens import (
     estimate_jacobians,
     jacobian_lens,
@@ -17,6 +22,7 @@ from ws4_lens.tuned_lens import (
     train_tuned_lens,
     tuned_lens,
 )
+from ws4_lens.upos_bridge import build_upos_lexicon, token_to_upos
 
 __all__ = [
     "run_model",
@@ -35,4 +41,9 @@ __all__ = [
     "jacobian_lens",
     "save_jacobian_checkpoint",
     "load_jacobian_checkpoint",
+    "build_upos_lexicon",
+    "token_to_upos",
+    "evaluate_lenses",
+    "prepare_pud_batches",
+    "prepare_wikitext_batches",
 ]

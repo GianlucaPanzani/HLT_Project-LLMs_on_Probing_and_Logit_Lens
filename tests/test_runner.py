@@ -511,14 +511,40 @@ def test_permission_error_is_not_treated_as_missing_features(dataset):
 
 
 @pytest.mark.parametrize("task", ["control", "control_next"])
-def test_capped_train_cannot_rebuild_control(dataset, task):
+def test_capped_train_builds_control_from_the_complete_word_table(dataset, task):
+    """Capped train features (mGPT): the control mapping is the one of the complete train split."""
+    label = "upos_next" if task == "control_next" else "upos"
+    full = run(tasks=(label, task))
+    path = dataset.source.paths["bert/pretrained/first/ewt_train/meta.json"]
+    meta = json.loads(path.read_text())
+    meta["max_rows"] = 30
+    meta["n_rows"] = 30
+    path.write_text(json.dumps(meta), encoding="utf-8")
+    for layer in (0, 1):
+        array_path = dataset.source.paths[f"bert/pretrained/first/ewt_train/layer_{layer:02d}.npy"]
+        np.save(array_path, np.load(array_path)[:30])
+    dataset.fits.clear()
+    capped = run(tasks=(label, task))
+
+    table = dataset.tables[("ewt", "train")]
+    counts, types = runner._complete_train_statistics(dataset.source, "ewt")
+    assert counts == Counter(table["upos"]) and types == set(table["form"])  # all 50 rows, not the first 30
+    mask = ~np.isnan(dataset.arrays[("ewt", "train", 0)][:30]).any(axis=1)
+    column = "next_upos" if task == "control_next" else "upos"
+    mask &= table[column].iloc[:30].notna().to_numpy()
+    valid = int(mask.sum())
+    assert set(capped["n_train"]) == {valid} and valid < 30  # the capped rows, without their NaN rows
+    assert list(capped.columns) == list(full.columns) and len(capped) == len(full)
+    control_rows = capped[capped["task"] == task]
+    assert control_rows["acc"].notna().all()
+
+
+def test_capped_train_without_control_needs_no_word_table(dataset):
     path = dataset.source.paths["bert/pretrained/first/ewt_train/meta.json"]
     meta = json.loads(path.read_text())
     meta["max_rows"] = 50
     path.write_text(json.dumps(meta), encoding="utf-8")
-    with pytest.raises(ValueError, match="capped"):
-        run(tasks=(task,))
-    assert not dataset.fits
+    assert len(run(tasks=("upos",))) > 0
 
 
 def test_missing_revision_fails_before_opening_source(dataset, monkeypatch):

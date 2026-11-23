@@ -1,0 +1,49 @@
+# Jobs of workstream 3 (cross-linguistic probing), run with:
+#   HLT_HF_REVISION=<feature commit> PYTHONPATH=src python scripts/10_run_probing.py --config configs/ws3.yaml
+# Format: see configs/ws1.yaml and scripts/10_run_probing.py.
+#
+# X2 (#28): the same frozen multilingual encoder on English and Italian.
+#   train ewt  -> evaluated on ewt test and pud_en
+#   train isdt -> evaluated on isdt test and pud_it
+# X3 (#29): the same for the multilingual decoder mgpt (jobs below the mbert ones).
+# X4 (#30): paired monolinguals — bert (ewt, from #12) vs bert_it; gpt2 vs geppetto (isdt here).
+defaults:
+  pooling: first
+  tasks: [upos, control]
+  eval_treebanks: null      # train treebank plus the PUD of its language
+  layers: null              # all layers 0..L
+  max_train_rows: 50000
+  seed: 42
+
+jobs:
+  - model: mbert
+    train_treebank: ewt
+    probe: linear
+    init: pretrained
+
+  - model: mbert
+    train_treebank: isdt
+    probe: linear
+    init: pretrained
+
+  # X3 (#29): the multilingual decoder (24 layers, d = 2048). Its train features were capped at
+  # 50,000 rows (the first rows of the treebank, see meta.json), the same max_train_rows as above.
+  - model: mgpt
+    train_treebank: ewt
+    probe: linear
+    init: pretrained
+
+  - model: mgpt
+    train_treebank: isdt
+    probe: linear
+    init: pretrained
+
+  - model: bert_it
+    train_treebank: isdt
+    probe: linear
+    init: pretrained
+
+  - model: geppetto
+    train_treebank: isdt
+    probe: linear
+    init: pretrained
