@@ -10,6 +10,7 @@ from __future__ import annotations
 import warnings
 
 import numpy as np
+import pandas as pd
 
 
 def linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
@@ -140,4 +141,102 @@ def sample_rows(valid_mask: np.ndarray, n: int, seed: int = 42) -> np.ndarray:
     rng = np.random.default_rng(seed)
     chosen = rng.choice(valid_indices, size=k, replace=False)
     return np.sort(chosen)
+
+
+def cka_matrix(
+    model_a: str,
+    model_b: str,
+    treebank: str = "ewt",
+    split: str = "test",
+    *,
+    pooling: str = "first",
+    n_tokens: int = 20000,
+    seed: int = 42,
+    _load_layer=None,
+    _load_meta=None,
+) -> pd.DataFrame:
+    """Compute the full layer-pair CKA matrix between two models.
+
+    Loads features via ``lib.features``, samples aligned valid rows once,
+    then computes ``linear_cka`` for every ``(layer_a, layer_b)`` pair.
+
+    Parameters
+    ----------
+    model_a : str
+        First model registry key (e.g. ``"bert"``).
+    model_b : str
+        Second model registry key (e.g. ``"distilbert"``).
+    treebank : str
+        Treebank registry key.
+    split : str
+        Split name (default ``"test"``).
+    pooling : str
+        Pooling strategy (default ``"first"``).
+    n_tokens : int
+        Number of tokens to sample (default 20 000).
+    seed : int
+        Random seed (default 42).
+    _load_layer : callable, optional
+        Custom layer loader (for testing without PyTorch / disk features).
+    _load_meta : callable, optional
+        Custom meta loader (for testing without PyTorch / disk features).
+
+    Returns
+    -------
+    pd.DataFrame
+        Long-format frame with columns ``layer_a``, ``layer_b``, ``cka``,
+        ``n_tokens``, ``seed`` (CONTRACTS.md §8).
+    """
+    init = "pretrained"
+
+    if _load_layer is None or _load_meta is None:
+        try:
+            from lib.features import load_layer as _fl_layer
+            from lib.features import load_meta as _fl_meta
+
+            _load_layer = _load_layer or _fl_layer
+            _load_meta = _load_meta or _fl_meta
+        except ImportError as err:
+            raise ImportError(
+                "cka_matrix requires lib.features (and torch), which are not available in this environment."
+            ) from err
+
+    meta_a = _load_meta(model_a, init, pooling, treebank, split)
+    meta_b = _load_meta(model_b, init, pooling, treebank, split)
+    L_a = meta_a["num_layers"]
+    L_b = meta_b["num_layers"]
+
+    # Build joint valid mask from layer 0 of both models
+    layer0_a = _load_layer(model_a, init, pooling, treebank, split, 0)
+    layer0_b = _load_layer(model_b, init, pooling, treebank, split, 0)
+    valid_a = ~np.isnan(np.asarray(layer0_a).astype(np.float32)).any(axis=1)
+    valid_b = ~np.isnan(np.asarray(layer0_b).astype(np.float32)).any(axis=1)
+    valid_mask = valid_a & valid_b
+
+    # Sample once
+    row_idx = sample_rows(valid_mask, n=n_tokens, seed=seed)
+    actual_n = len(row_idx)
+
+    # Pre-load sampled representations for model_b (small in RAM: (L_b+1) * N * d * 8 bytes)
+    reprs_b = [
+        np.asarray(_load_layer(model_b, init, pooling, treebank, split, lb))[row_idx].astype(np.float64)
+        for lb in range(L_b + 1)
+    ]
+
+    # Compute CKA for all layer pairs
+    records: list[dict] = []
+    for la in range(L_a + 1):
+        repr_a = np.asarray(_load_layer(model_a, init, pooling, treebank, split, la))[row_idx].astype(np.float64)
+        for lb in range(L_b + 1):
+            cka_val = linear_cka(repr_a, reprs_b[lb])
+            records.append({
+                "layer_a": la,
+                "layer_b": lb,
+                "cka": cka_val,
+                "n_tokens": actual_n,
+                "seed": seed,
+            })
+
+    return pd.DataFrame(records, columns=["layer_a", "layer_b", "cka", "n_tokens", "seed"])
+
 
