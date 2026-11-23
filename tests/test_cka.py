@@ -282,5 +282,3 @@ class TestCkaMatrix:
         diag = df[df["layer_a"] == df["layer_b"]]
         for _, row in diag.iterrows():
             assert pytest.approx(row["cka"], abs=1e-5) == 1.0
-
-

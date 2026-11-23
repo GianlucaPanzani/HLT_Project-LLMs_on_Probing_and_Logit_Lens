@@ -238,5 +238,3 @@ def cka_matrix(
             })
 
     return pd.DataFrame(records, columns=["layer_a", "layer_b", "cka", "n_tokens", "seed"])
-
-
