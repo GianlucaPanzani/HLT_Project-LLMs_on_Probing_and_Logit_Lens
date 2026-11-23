@@ -1,0 +1,1 @@
+"""Streamlit demo tabs (issues A1–A4)."""
