@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-import numpy as np
 import pytest
 
-from viz.lens_plots import (
+matplotlib = pytest.importorskip("matplotlib")
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+
+from viz.lens_plots import (  # noqa: E402
     build_commitment_table,
     compute_commitment_layer,
     load_overlay_data,
