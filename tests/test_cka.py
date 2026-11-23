@@ -1,12 +1,14 @@
-"""Tests for ws2_compression.cka – linear_cka (issue C1, #15).
+"""Tests for ws2_compression.cka – linear_cka and sample_rows (issues C1 #15, C2 #16).
 
 All tests use synthetic data and require no downloads or torch.
 """
 
+import warnings
+
 import numpy as np
 import pytest
 
-from ws2_compression.cka import linear_cka
+from ws2_compression.cka import linear_cka, sample_rows
 
 # ------------------------------------------------------------------ #
 # Fixtures
@@ -166,3 +168,60 @@ class TestLinearCkaErrors:
         X[0, 0] = np.inf
         with pytest.raises(ValueError, match="NaN or Inf"):
             linear_cka(X, np.ones((10, 5)))
+
+
+# ------------------------------------------------------------------ #
+# sample_rows: token sampling (issue C2, #16)
+# ------------------------------------------------------------------ #
+
+class TestSampleRows:
+    """Tests for aligned token sampling."""
+
+    def test_all_valid(self):
+        mask = np.ones(100, dtype=bool)
+        idx = sample_rows(mask, 50, seed=42)
+        assert len(idx) == 50
+        assert np.all(mask[idx])
+        assert np.all(np.diff(idx) > 0)
+
+    def test_subset_valid(self):
+        mask = np.zeros(100, dtype=bool)
+        mask[10:30] = True
+        idx = sample_rows(mask, 15, seed=42)
+        assert len(idx) == 15
+        assert np.all(mask[idx])
+
+    def test_fewer_valid_than_requested(self):
+        mask = np.zeros(100, dtype=bool)
+        mask[0:5] = True
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            idx = sample_rows(mask, 50, seed=42)
+            assert len(w) == 1
+            assert "only 5" in str(w[0].message)
+        assert len(idx) == 5
+        assert np.all(mask[idx])
+
+    def test_reproducibility(self):
+        mask = np.ones(200, dtype=bool)
+        idx1 = sample_rows(mask, 50, seed=42)
+        idx2 = sample_rows(mask, 50, seed=42)
+        np.testing.assert_array_equal(idx1, idx2)
+
+    def test_different_seed(self):
+        mask = np.ones(200, dtype=bool)
+        idx1 = sample_rows(mask, 50, seed=42)
+        idx2 = sample_rows(mask, 50, seed=99)
+        assert not np.array_equal(idx1, idx2)
+
+    def test_no_invalid_indices(self):
+        mask = np.array([True, False, True, False, True])
+        idx = sample_rows(mask, 100, seed=42)
+        assert len(idx) == 3
+        for i in idx:
+            assert mask[i]
+
+    def test_1d_requirement(self):
+        with pytest.raises(ValueError, match="1-D"):
+            sample_rows(np.ones((5, 5), dtype=bool), 3)
+

@@ -7,6 +7,8 @@ CONTRACTS.md §10).
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
 
@@ -97,3 +99,45 @@ def linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
         return 0.0
 
     return float(numerator / denominator)
+
+
+def sample_rows(valid_mask: np.ndarray, n: int, seed: int = 42) -> np.ndarray:
+    """Sample a fixed subset of valid (non-NaN) row indices.
+
+    Used to select aligned tokens shared between two models before
+    computing CKA across all layer pairs (CONTRACTS.md §10).
+
+    Parameters
+    ----------
+    valid_mask : np.ndarray
+        1-D boolean array where ``True`` marks a valid (non-NaN) row.
+    n : int
+        Desired number of rows to sample.
+    seed : int
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    np.ndarray
+        Sorted 1-D integer array of sampled row indices. Its length is
+        ``min(n, n_valid)`` where ``n_valid`` is the number of ``True``
+        entries in *valid_mask*.
+    """
+    if valid_mask.ndim != 1:
+        raise ValueError(f"valid_mask must be 1-D, got {valid_mask.ndim}-D.")
+
+    valid_indices = np.flatnonzero(valid_mask)
+    n_valid = len(valid_indices)
+
+    if n_valid < n:
+        warnings.warn(
+            f"Requested {n} rows but only {n_valid} are valid; using all {n_valid}.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    k = min(n, n_valid)
+    rng = np.random.default_rng(seed)
+    chosen = rng.choice(valid_indices, size=k, replace=False)
+    return np.sort(chosen)
+
