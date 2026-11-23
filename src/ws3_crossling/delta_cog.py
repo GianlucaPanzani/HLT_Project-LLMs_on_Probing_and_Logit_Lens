@@ -8,7 +8,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-from lib.metrics import center_of_gravity, relative_depth, selectivity
+from lib.metrics import center_of_gravity, relative_depth, selectivity, summarize_probing
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +89,23 @@ DELTA_COG_COLUMNS = [
     "delta_cog",
     "L_en",
     "L_it",
+]
+
+DELTA_COG_BY_SEED_COLUMNS = [*DELTA_COG_COLUMNS, "seed"]
+
+DELTA_COG_AGG_COLUMNS = [
+    "pair",
+    "kind",
+    "en_model",
+    "it_model",
+    "eval_set",
+    "cog_norm_en_mean",
+    "cog_norm_it_mean",
+    "delta_cog_mean",
+    "delta_cog_std",
+    "delta_cog_min",
+    "delta_cog_max",
+    "n_seeds",
 ]
 
 SELECTIVITY_CURVE_COLUMNS = [
@@ -214,6 +231,80 @@ def delta_cog(
             )
 
     return pd.DataFrame(rows, columns=DELTA_COG_COLUMNS)
+
+
+def delta_cog_by_seed(
+    results: pd.DataFrame,
+    pairs: tuple[ModelPair, ...] = PAIRS,
+    *,
+    probe: str = "linear",
+    init: str = "pretrained",
+    pooling: str = "first",
+    task: str = "upos",
+) -> pd.DataFrame:
+    """Compute Delta CoG separately for each probing seed.
+
+    Parameters
+    ----------
+    results
+        Raw probing rows (possibly several seeds per experiment).
+
+    Returns
+    -------
+    One row per pair, eval set and seed. Pairs without both languages for that
+    seed are skipped (e.g. mGPT with only seed 42).
+    """
+    if "seed" not in results.columns:
+        raise ValueError("Missing probing results columns: ['seed'].")
+    if results.empty:
+        return pd.DataFrame(columns=DELTA_COG_BY_SEED_COLUMNS)
+
+    rows: list[dict[str, object]] = []
+    for seed in sorted(results["seed"].unique()):
+        seed_results = results.loc[results["seed"] == seed]
+        summary = summarize_probing(seed_results)
+        for spec in pairs:
+            try:
+                part = delta_cog(
+                    summary,
+                    pairs=(spec,),
+                    probe=probe,
+                    init=init,
+                    pooling=pooling,
+                    task=task,
+                )
+            except ValueError:
+                continue
+            for _, row in part.iterrows():
+                rows.append({**row.to_dict(), "seed": int(seed)})
+
+    return pd.DataFrame(rows, columns=DELTA_COG_BY_SEED_COLUMNS)
+
+
+def aggregate_delta_cog(per_seed: pd.DataFrame) -> pd.DataFrame:
+    """Mean and spread of Delta CoG across seeds."""
+    if per_seed.empty:
+        return pd.DataFrame(columns=DELTA_COG_AGG_COLUMNS)
+
+    group_cols = ["pair", "kind", "en_model", "it_model", "eval_set"]
+    missing = sorted(set(group_cols + ["delta_cog", "cog_norm_en", "cog_norm_it", "seed"]) - set(per_seed.columns))
+    if missing:
+        raise ValueError(f"Missing per-seed columns: {missing}.")
+
+    grouped = per_seed.groupby(group_cols, sort=False)
+    agg = grouped.agg(
+        cog_norm_en_mean=("cog_norm_en", "mean"),
+        cog_norm_it_mean=("cog_norm_it", "mean"),
+        delta_cog_mean=("delta_cog", "mean"),
+        delta_cog_min=("delta_cog", "min"),
+        delta_cog_max=("delta_cog", "max"),
+        n_seeds=("seed", "nunique"),
+    ).reset_index()
+    std = grouped["delta_cog"].std(ddof=1).reset_index(name="delta_cog_std")
+    std.loc[std["delta_cog_std"].isna(), "delta_cog_std"] = np.nan
+    out = agg.merge(std, on=group_cols, how="left")
+    out.loc[out["n_seeds"] < 2, "delta_cog_std"] = np.nan
+    return out[DELTA_COG_AGG_COLUMNS]
 
 
 def selectivity_curves(results: pd.DataFrame) -> pd.DataFrame:

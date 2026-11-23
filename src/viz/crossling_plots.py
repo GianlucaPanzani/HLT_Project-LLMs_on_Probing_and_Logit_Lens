@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 from ws3_crossling.delta_cog import PAIRS, ModelPair
@@ -106,11 +107,20 @@ def plot_selectivity_pairs(
 
             delta_row = delta.loc[(delta["pair"] == pair_id) & (delta["eval_set"] == eval_set)]
             if not delta_row.empty:
-                d = float(delta_row.iloc[0]["delta_cog"])
+                delta_point = delta_row.iloc[0]
+                if "delta_cog_mean" in delta.columns:
+                    mean = float(delta_point["delta_cog_mean"])
+                    std = delta_point["delta_cog_std"]
+                    if pd.notna(std) and int(delta_point["n_seeds"]) > 1:
+                        label = f"ΔCoG={mean:+.3f}±{float(std):.3f}"
+                    else:
+                        label = f"ΔCoG={mean:+.3f}"
+                else:
+                    label = f"ΔCoG={float(delta_point['delta_cog']):+.3f}"
                 ax.text(
                     0.03,
                     0.97,
-                    f"ΔCoG={d:+.3f}",
+                    label,
                     transform=ax.transAxes,
                     va="top",
                     fontsize=9,
@@ -139,11 +149,23 @@ def plot_delta_cog(delta: pd.DataFrame, path: Path) -> Path:
     x_pos = range(len(plot_df))
     colors = ["C0" if es == "own_test" else "C2" for es in plot_df["eval_set"]]
 
+    if "delta_cog_mean" in plot_df.columns:
+        heights = plot_df["delta_cog_mean"]
+        yerr = None
+        if "delta_cog_std" in plot_df.columns and (plot_df["n_seeds"] > 1).any():
+            yerr = plot_df["delta_cog_std"].to_numpy()
+            yerr = np.where(np.isfinite(yerr), yerr, 0.0)
+        y_label = "Δ CoG_norm (IT − EN), mean"
+    else:
+        heights = plot_df["delta_cog"]
+        yerr = None
+        y_label = "Δ CoG_norm (IT − EN)"
+
     fig, ax = plt.subplots(figsize=(9, 4))
-    ax.bar(x_pos, plot_df["delta_cog"], color=colors)
+    ax.bar(x_pos, heights, color=colors, yerr=yerr, capsize=3, ecolor="black", error_kw={"linewidth": 1})
     ax.axhline(0, color="black", linewidth=0.8)
     ax.set_xticks(list(x_pos), x_labels, rotation=0, fontsize=9)
-    ax.set_ylabel("Δ CoG_norm (IT − EN)")
+    ax.set_ylabel(y_label)
     ax.set_title("Delta CoG by model pair")
     ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()

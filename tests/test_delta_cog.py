@@ -9,10 +9,13 @@ import pandas as pd
 import pytest
 
 from ws3_crossling.delta_cog import (
+    DELTA_COG_AGG_COLUMNS,
     DELTA_COG_COLUMNS,
     PAIRS,
     ModelPair,
+    aggregate_delta_cog,
     delta_cog,
+    delta_cog_by_seed,
     selectivity_curves,
 )
 
@@ -139,6 +142,85 @@ def test_selectivity_curves_synthetic() -> None:
     assert len(curves) == 4
     np.testing.assert_allclose(curves["tau"].to_numpy(), [0, 1 / 3, 2 / 3, 1])
     np.testing.assert_allclose(curves["selectivity"].to_numpy(), [0.0, 0.2, 0.4, 0.3])
+
+
+def _two_seed_probing_results() -> pd.DataFrame:
+    """Minimal probing frame with two seeds and different train sampling (acc shift)."""
+    rows: list[dict[str, object]] = []
+    specs = [
+        ("mbert", "ewt", "ewt", "en", 42, 0.62),
+        ("mbert", "isdt", "isdt", "it", 42, 0.60),
+        ("mbert", "ewt", "pud_en", "en", 42, 0.61),
+        ("mbert", "isdt", "pud_it", "it", 42, 0.59),
+        ("mbert", "ewt", "ewt", "en", 43, 0.58),
+        ("mbert", "isdt", "isdt", "it", 43, 0.61),
+        ("mbert", "ewt", "pud_en", "en", 43, 0.57),
+        ("mbert", "isdt", "pud_it", "it", 43, 0.60),
+    ]
+    acc_ctrl = 0.5
+    for model, train, eval_tb, lang, seed, peak_acc in specs:
+        for layer in range(4):
+            acc_upos = acc_ctrl + (peak_acc - acc_ctrl) * (1 if layer == 2 else 0)
+            for task, acc in (("upos", acc_upos), ("control", acc_ctrl)):
+                rows.append(
+                    {
+                        "model": model,
+                        "train_treebank": train,
+                        "eval_treebank": eval_tb,
+                        "lang": lang,
+                        "kind": "word",
+                        "probe": "linear",
+                        "task": task,
+                        "init": "pretrained",
+                        "pooling": "first",
+                        "layer": layer,
+                        "L": 3,
+                        "tau": layer / 3,
+                        "acc": acc,
+                        "n_train": 100,
+                        "n_eval": 50,
+                        "hparams": {},
+                        "seed": seed,
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+def test_delta_cog_by_seed_and_aggregate() -> None:
+    results = _two_seed_probing_results()
+    tiny = (PAIRS[0],)
+    per_seed = delta_cog_by_seed(results, pairs=tiny)
+    assert set(per_seed["seed"]) == {42, 43}
+    assert len(per_seed) == 4
+
+    agg = aggregate_delta_cog(per_seed)
+    assert list(agg.columns) == DELTA_COG_AGG_COLUMNS
+    row = agg.loc[(agg["pair"] == "mbert") & (agg["eval_set"] == "own_test")].iloc[0]
+    assert row["n_seeds"] == 2
+    assert row["delta_cog_std"] == pytest.approx(per_seed["delta_cog"].std(ddof=1))
+
+
+def test_aggregate_single_seed_nan_std() -> None:
+    per_seed = pd.DataFrame(
+        [
+            {
+                "pair": "mgpt",
+                "kind": "multilingual",
+                "en_model": "mgpt",
+                "it_model": "mgpt",
+                "eval_set": "own_test",
+                "cog_norm_en": 0.57,
+                "cog_norm_it": 0.56,
+                "delta_cog": -0.01,
+                "L_en": 24,
+                "L_it": 24,
+                "seed": 42,
+            }
+        ]
+    )
+    agg = aggregate_delta_cog(per_seed)
+    assert agg.iloc[0]["n_seeds"] == 1
+    assert pd.isna(agg.iloc[0]["delta_cog_std"])
 
 
 def test_plot_smoke(tmp_path: Path) -> None:
