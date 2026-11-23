@@ -9,7 +9,7 @@ pytest.importorskip("torch")
 # Add scripts/ so we can import the download module.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from lib.registry import get_treebank_spec
+from lib.registry import get_treebank_spec  # noqa: E402
 
 
 class TestBuildUrl:

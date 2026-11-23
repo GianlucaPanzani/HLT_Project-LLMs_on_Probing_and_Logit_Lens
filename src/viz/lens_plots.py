@@ -17,12 +17,12 @@ from typing import Any
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
 
-from lib.metrics import center_of_gravity, selectivity
-from lib.paths import ROOT, lens_result_path, probing_result_path
+from lib.metrics import center_of_gravity, selectivity  # noqa: E402
+from lib.paths import ROOT, lens_result_path, probing_result_path  # noqa: E402
 
 DEFAULT_TREEBANK_MAP: dict[str, tuple[str, str]] = {
     "gpt2": ("pud_en", "ewt"),
