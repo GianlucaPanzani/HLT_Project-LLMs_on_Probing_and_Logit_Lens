@@ -11,6 +11,7 @@ jobs:
   - model: bert
     probe: linear
     init: pretrained
+    tasks: [upos, control, upos_next, control_next]
 
   - model: bert
     probe: linear
@@ -55,3 +56,23 @@ jobs:
   - model: gpt2
     probe: mlp
     init: random
+
+  - model: gpt2
+    probe: linear
+    init: pretrained
+    pooling: last
+    tasks: [upos, control, upos_next, control_next]
+
+  - model: geppetto
+    train_treebank: isdt
+    probe: linear
+    init: pretrained
+    pooling: last
+    tasks: [upos, control, upos_next, control_next]
+
+  - model: bert_it
+    train_treebank: isdt
+    probe: linear
+    init: pretrained
+    pooling: first
+    tasks: [upos_next, control_next]
