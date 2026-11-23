@@ -13,3 +13,4 @@ matplotlib
 torch
 transformers
 conllu
+kaleido
