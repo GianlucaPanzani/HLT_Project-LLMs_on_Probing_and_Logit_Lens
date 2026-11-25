@@ -17,7 +17,6 @@ APP_DIR = ROOT / "app"
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
-from tabs import cka, crossling, probing  # noqa: E402, I001
 from tabs.lens_heatmap import _build_heatmap, compute_lens_grid  # noqa: E402, I001
 
 
@@ -87,9 +86,3 @@ def test_build_heatmap_maps_each_layer_row():
     assert len(yaxis.ticktext) == num_layers
     assert yaxis.ticktext[0] == "0 · input"
     assert yaxis.ticktext[-1] == "L=12 · final"
-
-
-def test_placeholder_tabs_expose_render():
-    assert callable(probing.render)
-    assert callable(cka.render)
-    assert callable(crossling.render)

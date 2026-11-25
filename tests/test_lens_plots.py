@@ -110,11 +110,18 @@ def test_plot_model_overlay_runs(tmp_path: Path):
 
 @pytest.mark.skipif(not _HAS_LENS_RESULTS, reason="Requires real probing results on disk")
 def test_plot_crossling_comparison_runs(tmp_path: Path):
-    """Verify plot_crossling_comparison runs and generates a valid image file."""
+    """Verify plot_crossling_comparison runs and generates valid image files."""
     save_file = tmp_path / "test_crossling.png"
-    fig = plot_crossling_comparison(save_path=save_file)
+    fig = plot_crossling_comparison(save_path=save_file, use_tau=False)
 
     assert isinstance(fig, plt.Figure)
     assert save_file.exists()
     assert save_file.stat().st_size > 1000
     plt.close(fig)
+
+    save_file_tau = tmp_path / "test_crossling_tau.png"
+    fig_tau = plot_crossling_comparison(save_path=save_file_tau, use_tau=True)
+    assert isinstance(fig_tau, plt.Figure)
+    assert save_file_tau.exists()
+    assert save_file_tau.stat().st_size > 1000
+    plt.close(fig_tau)

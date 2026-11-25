@@ -99,12 +99,25 @@ sec10_text = """## 10. The Jacobian Lens (Gurnee et al., 2024/2026): Theory & Ad
 sec11_intro = """## 11. Cross-Linguistic Comparison: GPT-2 (English) vs. GePpeTto (Italian)
 
 Does language structure alter the internal trajectory of generative commitment and syntactic decodability?
-Below, we directly contrast **GPT-2** (trained on English WebText, evaluated on `pud_en`) with **GePpeTto** (trained on Italian Wikipedia & Common Crawl, evaluated on `pud_it`) across relative layer depth $\\tau = l / L$.
+Below, we directly contrast **GPT-2** (trained on English WebText, evaluated on `pud_en`) with **GePpeTto** (trained on Italian Wikipedia & Common Crawl, evaluated on `pud_it`).
+
+Since both `gpt2` and `geppetto` share the identical architecture depth ($L=12$ Transformer blocks), plotting against **absolute Transformer Layer $l \in [0, 12]$** provides immediate, direct interpretability (e.g. exactly at which layer the models commit to syntax or surface token). We also provide the relative depth view $\\tau = l / L \\in [0, 1]$ for normalized cross-model alignment.
 """
 
 sec11_code = """from viz.lens_plots import plot_crossling_comparison
 
-fig_cross = plot_crossling_comparison(save_path="docs/results/figures/ws4/crossling_gpt2_vs_geppetto.png")
+# 1. Primary View: Direct Comparison by Transformer Layer l in [0, 12]
+fig_layers = plot_crossling_comparison(
+    save_path=ROOT_DIR / "results" / "figures" / "ws4" / "crossling_gpt2_vs_geppetto.png",
+    use_tau=False,
+)
+plt.show()
+
+# 2. Normalized View: Comparison by Relative Layer Depth tau = l / L in [0, 1]
+fig_tau = plot_crossling_comparison(
+    save_path=ROOT_DIR / "results" / "figures" / "ws4" / "crossling_gpt2_vs_geppetto_tau.png",
+    use_tau=True,
+)
 plt.show()
 """
 

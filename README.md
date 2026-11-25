@@ -32,5 +32,15 @@ Run code and notebooks with `PYTHONPATH=src` so that `from lib.data import ...` 
 pip install -r requirements.txt
 ```
 
+## Interactive demo
+
+The Streamlit app uses sidebar multipage navigation (issue A5). Launch it with:
+
+```bash
+PYTHONPATH=src streamlit run app/app.py
+```
+
+Pages are discovered automatically from `app/pages/[0-9][0-9]_*.py`. Add a new page by creating a file there; no edit to the router is needed. See [app/PAGES.md](app/PAGES.md) for page ownership and the UI/helper separation rules.
+
 ## Workflow
 Tasks are GitHub issues grouped by milestone; the overview is in [docs/TODO.md](docs/TODO.md). Open one PR per issue (`Closes #N`). CI (lint and tests) runs on PRs only.

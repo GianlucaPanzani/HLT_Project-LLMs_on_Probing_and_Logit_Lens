@@ -45,8 +45,12 @@ def main() -> None:
 
     if "gpt2" in models and "geppetto" in models:
         cross_path = out_dir / "crossling_gpt2_vs_geppetto.png"
-        plot_crossling_comparison(save_path=cross_path)
-        print(f"  Saved figure: {cross_path.relative_to(ROOT)}")
+        plot_crossling_comparison(save_path=cross_path, use_tau=False)
+        print(f"  Saved figure: {cross_path.relative_to(ROOT)} (by layer)")
+
+        cross_tau_path = out_dir / "crossling_gpt2_vs_geppetto_tau.png"
+        plot_crossling_comparison(save_path=cross_tau_path, use_tau=True)
+        print(f"  Saved figure: {cross_tau_path.relative_to(ROOT)} (by tau)")
 
     print("\n" + "=" * 75)
     print("Commitment Layers Table (first layer reaching >= 90% of maximum):")
