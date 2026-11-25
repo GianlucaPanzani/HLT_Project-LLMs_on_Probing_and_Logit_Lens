@@ -4,6 +4,8 @@ Question: how does UPOS information emerge across layers when a model sees only 
 
 Data: UD r2.19, English-EWT train/dev/test. Models: `bert` (`bert-base-cased`) and `gpt2`, both with 12 Transformer blocks and hidden size 768. All backbone weights are frozen. Results below use seed 42 only and EWT test; PUD results are not included in these figures. Metric and alignment definitions follow [CONTRACTS.md](../CONTRACTS.md), sections 3, 6, 7 and 10; the research questions follow [PROPOSAL.md](../../PROPOSAL.md), workstream 1.
 
+P7 audit (24 November 2026): [baseline definitions, measured inventory and provenance](../../src/ws1_probing/BASELINES.md); [paper comparisons, contrary evidence and presentation statements](../../src/ws1_probing/EVIDENCE.md). The literature supports the controls and several qualitative trends, but no reviewed paper exactly reproduces our experimental protocol or validates these numerical values.
+
 ## Summary
 
 - **Current-word selectivity peaks late in both models.** With linear probes, BERT peaks at layer 11 (`tau=0.917`, selectivity 0.3818); GPT-2 peaks at layer 12 (`tau=1.000`, 0.3609). Their normalized centers of gravity are close: 0.5977 and 0.5943. Accuracy peaks earlier, at layers 6 and 8, respectively. The late rise in selectivity partly reflects declining control accuracy.
@@ -81,7 +83,7 @@ The horizontal lines are the separately measured layer-0 accuracies for each ini
 
 With random weights, accuracy decreases from layer 0 through layer 12 in both models. Random representations still support substantial decoding: a trained probe can exploit word identity in fixed embeddings. Their control results, calculated from the same parquet pairs although not displayed in this accuracy-only figure, are correspondingly strong. The maximum random-model selectivity is just 0.0173 for BERT and 0.0205 for GPT-2, compared with 0.3818 and 0.3609 for pretrained models.
 
-The random baselines therefore support a role for learned representations beyond the untrained architecture and lexical lookup. They do not justify interpreting roughly 74% random layer-0 accuracy as learned contextual linguistic knowledge. The `CoG_norm` of a nearly zero-selectivity curve is also a weak basis for claims about where linguistic information is concentrated.
+The random baselines therefore support a benefit from pretrained weights over the untrained-feature reference. The tokenizer and architecture remain fixed, and no explicit lexical-lookup classifier or context-perturbation experiment is measured here, so this comparison does not isolate contextual syntax from lexical information. It does not justify interpreting roughly 74% random layer-0 accuracy as learned contextual linguistic knowledge. The `CoG_norm` of a nearly zero-selectivity curve is also a weak basis for claims about where linguistic information is concentrated.
 
 ## 5. Linear versus MLP: more linguistic selectivity or more control fitting?
 
@@ -101,6 +103,8 @@ The MLP increases the best task accuracy from 95.19% to 95.80% for BERT and from
 At BERT layer 11 the MLP gains 0.85 pp in task accuracy but 13.24 pp in control accuracy, reducing selectivity by 12.39 pp. At GPT-2 layer 12 it gains 0.85 pp in task accuracy but 11.88 pp in control accuracy, reducing selectivity by 11.03 pp. The MLP has lower selectivity at **all 13 layers** in both models. Its task accuracy is not uniformly higher: GPT-2 has small decreases at several early layers.
 
 The observed benefit is therefore a small improvement in the best raw accuracy, accompanied by a much larger ability to fit the arbitrary word-type control. This is consistent with increased memorization capacity; the experiment does not show an improvement in selective linguistic decoding. It also does not establish that nonlinear linguistic information is absent: the conclusion concerns this MLP configuration and this control task.
+
+Control accuracy also depends on the representation, so selectivity is not an exact decomposition into linguistic knowledge and probe memorization. [Li et al. (2022), §3.5](https://aclanthology.org/2022.naacl-main.84/) provides evidence for this limitation. The [P7 evidence note](../../src/ws1_probing/EVIDENCE.md) compares its GPT-2 results and Ecco's BERT results with ours, explicitly retaining the protocol differences and numerical discrepancies.
 
 The MLP's `CoG_norm` is higher than the linear probe's (0.6383 vs 0.5977 for BERT; 0.6534 vs 0.5943 for GPT-2), even though selectivity is lower everywhere. This reflects the distribution of the remaining selectivity across depth, not a gain in information. The selectivity peaks remain at layers 11 and 12.
 
@@ -137,3 +141,5 @@ The first command updates `results/summary/cog.parquet`; the plotting script com
 The PNG of the linear/MLP comparison currently has overlapping CoG annotations. The exact values are given in section 6; the annotation placement should be adjusted before the final presentation.
 
 Artifacts under `results/` are gitignored; the version-controlled report is `docs/results/ws1_probing.md`. Share the generated figures through the team's storage and record their location in the P6 PR. The relative figure links resolve after the artifacts have been downloaded or regenerated locally; the generated files must not be committed. `scripts/13_push_probing_results.py` uploads only probing parquets, so it does not publish these figures.
+
+The P7 audit verified all 15 local probing files against shared snapshot `7587960472da41ccea0ebab41e1249137c3988ff` of `hlt-group11/features`, checked all 708 rows for complete task/control pairs and matching sample counts, and read the 33 associated feature metadata files. The [baseline audit](../../src/ws1_probing/BASELINES.md) records exact retrieval instructions and the remaining provenance gaps: the result schema does not preserve original run/input commits, immutable checkpoint revisions or selected row IDs. This snapshot is an artifact reference, not proof of a fully reconstructed historical run.
