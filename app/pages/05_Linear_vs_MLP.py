@@ -5,29 +5,27 @@ from tabs.probe_comparison import METRICS, MODELS, load_results, prepare_compari
 
 from viz.probing_plots import plot_probe_comparison
 
+seed = 42
+
 st.title("Linear vs MLP")
-st.caption(
-    "BERT and GPT-2 · pretrained · first pooling · current-word UPOS · trained on EWT. "
-    "Existing test results; no retraining."
-)
-eval_treebank = st.selectbox(
-    label="Evaluation treebank",
-    options=("ewt", "pud_en"),
-    key="probe_comparison_eval",
-)
-seed = st.number_input(
-    label="Seed",
-    min_value=0,
-    value=42,
-    step=1,
-    key="probe_comparison_seed",
-)
-depth_type = st.radio(
-    label="Depth axis",
-    options=("layer", "tau"),
-    horizontal=True,
-    key="probe_comparison_axis",
-)
+
+st.markdown("**BERT and GPT-2** :grey[pretrained · first pooling · current-word UPOS · trained on EWT · no retraining.]")
+
+col1, _, col2, _ = st.columns([4,1,4,1])
+with col1:
+    eval_treebank = st.selectbox(
+        label="Evaluation treebank",
+        options=("ewt", "pud_en"),
+        key="probe_comparison_eval",
+    )
+with col2:
+    depth_type = st.radio(
+        label="Depth axis",
+        options=("layer", "tau"),
+        horizontal=True,
+        key="probe_comparison_axis",
+    )
+
 try:
     comparison = prepare_comparison(load_results(), eval_treebank=eval_treebank, seed=seed)
     summary = summarize_comparison(comparison)
