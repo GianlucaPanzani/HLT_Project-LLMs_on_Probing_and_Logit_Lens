@@ -211,6 +211,7 @@ def plot_model_overlay(
     eval_treebank: str | None = None,
     train_treebank: str | None = None,
     save_path: Path | str | None = None,
+    use_tau: bool = False,
 ) -> plt.Figure:
     """Generate and optionally save a publication-quality dual-panel overlay plot for a model.
 
@@ -224,6 +225,9 @@ def plot_model_overlay(
         Training treebank key.
     save_path : Path or str or None, optional
         If provided, save the figure to this path.
+    use_tau : bool, default=False
+        If True, use relative layer depth tau = l / L on the x-axis.
+        If False (default), use absolute transformer layer indices l in [0, 12].
 
     Returns
     -------
@@ -231,7 +235,9 @@ def plot_model_overlay(
         Rendered matplotlib Figure.
     """
     data = load_overlay_data(model, eval_treebank, train_treebank)
-    taus = data["taus"]
+    x_vals = data["taus"] if use_tau else data["layers"]
+    xlabel = r"Relative Layer Depth $\tau = l / L$" if use_tau else "Transformer Layer $l$"
+    xlim = (-0.02, 1.02) if use_tau else (-0.4, 12.4)
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6), dpi=150)
 
@@ -243,10 +249,10 @@ def plot_model_overlay(
     }
 
     # ------------------------------------------------------------------ #
-    # Panel (a): Accuracies and Probing Selectivity vs tau
+    # Panel (a): Accuracies and Probing Selectivity
     # ------------------------------------------------------------------ #
     ax1.plot(
-        taus,
+        x_vals,
         data["probing_sel_next"],
         label="Probing: Next UPOS Selectivity",
         color=colors["probing"],
@@ -255,12 +261,13 @@ def plot_model_overlay(
         markersize=5,
     )
     c_prob, _, _ = compute_commitment_layer(data["probing_sel_next"])
-    ax1.axvline(taus[c_prob], color=colors["probing"], linestyle=":", alpha=0.6)
+    c_prob_x = data["taus"][c_prob] if use_tau else data["layers"][c_prob]
+    ax1.axvline(c_prob_x, color=colors["probing"], linestyle=":", alpha=0.6)
 
     for l_key, l_name in (("logit", "Logit"), ("tuned", "Tuned"), ("jacobian", "Jacobian")):
         u_acc = data["lenses"][l_key]["upos_top1_acc"]
         ax1.plot(
-            taus,
+            x_vals,
             u_acc,
             label=f"{l_name}: UPOS Acc",
             color=colors[l_key],
@@ -271,7 +278,7 @@ def plot_model_overlay(
         )
         w_acc = data["lenses"][l_key]["top1_acc"]
         ax1.plot(
-            taus,
+            x_vals,
             w_acc,
             label=f"{l_name}: Token Top-1",
             color=colors[l_key],
@@ -283,10 +290,12 @@ def plot_model_overlay(
 
     eval_label = data["eval_treebank"].upper()
     ax1.set_title(f"{model.upper()} ({eval_label}) — Probing & Lens Commitments", fontsize=12, fontweight="bold")
-    ax1.set_xlabel(r"Relative Layer Depth $\tau = l / L$", fontsize=11)
+    ax1.set_xlabel(xlabel, fontsize=11)
     ax1.set_ylabel("Accuracy / Selectivity", fontsize=11)
-    ax1.set_xlim(-0.02, 1.02)
+    ax1.set_xlim(*xlim)
     ax1.set_ylim(-0.02, 0.48)
+    if not use_tau:
+        ax1.set_xticks(range(0, 13))
     ax1.grid(True, linestyle="--", alpha=0.4)
     ax1.legend(loc="upper left", fontsize=8.5, framealpha=0.9)
 
@@ -301,17 +310,19 @@ def plot_model_overlay(
         ent = data["lenses"][l_key]["entropy_mean"]
         kl = data["lenses"][l_key]["kl_mean"]
 
-        line_ent, = ax2.plot(taus, ent, color=colors[l_key], linestyle="-", linewidth=1.8, marker="o", markersize=4)
-        line_kl, = ax2_twin.plot(taus, kl, color=colors[l_key], linestyle=":", linewidth=1.8, marker="x", markersize=4)
+        line_ent, = ax2.plot(x_vals, ent, color=colors[l_key], linestyle="-", linewidth=1.8, marker="o", markersize=4)
+        line_kl, = ax2_twin.plot(x_vals, kl, color=colors[l_key], linestyle=":", linewidth=1.8, marker="x", markersize=4)
 
         lines.extend([line_ent, line_kl])
         labels.extend([f"{l_name} Entropy (H)", f"{l_name} KL to Final"])
 
     ax2.set_title(f"{model.upper()} ({eval_label}) — Entropy & KL Dynamics", fontsize=12, fontweight="bold")
-    ax2.set_xlabel(r"Relative Layer Depth $\tau = l / L$", fontsize=11)
+    ax2.set_xlabel(xlabel, fontsize=11)
     ax2.set_ylabel("Shannon Entropy [nats] (Solid -)", fontsize=11)
     ax2_twin.set_ylabel(r"$D_{\mathrm{KL}}(P_L \parallel P_l)$ [nats] (Dotted :)", fontsize=11)
-    ax2.set_xlim(-0.02, 1.02)
+    ax2.set_xlim(*xlim)
+    if not use_tau:
+        ax2.set_xticks(range(0, 13))
     ax2.grid(True, linestyle="--", alpha=0.4)
     ax2.legend(lines, labels, loc="upper right", fontsize=8, framealpha=0.9, ncol=2)
 
@@ -327,6 +338,7 @@ def plot_model_overlay(
 
 def plot_crossling_comparison(
     save_path: Path | str | None = None,
+    use_tau: bool = False,
 ) -> plt.Figure:
     """Generate side-by-side cross-linguistic comparison between GPT-2 (EN) and GePpeTto (IT).
 
@@ -340,6 +352,9 @@ def plot_crossling_comparison(
     ----------
     save_path : Path or str or None, optional
         If provided, save the figure to this path.
+    use_tau : bool, default=False
+        If True, use relative layer depth tau = l / L on the x-axis.
+        If False (default), use absolute transformer layer indices l in [0, 12].
 
     Returns
     -------
@@ -349,7 +364,10 @@ def plot_crossling_comparison(
     d_en = load_overlay_data("gpt2", "pud_en", "ewt")
     d_it = load_overlay_data("geppetto", "pud_it", "isdt")
 
-    taus = d_en["taus"]
+    x_vals = d_en["taus"] if use_tau else d_en["layers"]
+    xlabel = r"Relative Layer Depth $\tau = l / L$" if use_tau else "Transformer Layer $l$"
+    xlim = (-0.02, 1.02) if use_tau else (-0.4, 12.4)
+
     color_en = "#1f77b4"  # blue
     color_it = "#2ca02c"  # green
 
@@ -360,7 +378,7 @@ def plot_crossling_comparison(
     # ------------------------------------------------------------------ #
     ax = axs[0, 0]
     ax.plot(
-        taus,
+        x_vals,
         d_en["probing_sel_next"],
         label="GPT-2 (English, PUD EN)",
         color=color_en,
@@ -369,7 +387,7 @@ def plot_crossling_comparison(
         markersize=5,
     )
     ax.plot(
-        taus,
+        x_vals,
         d_it["probing_sel_next"],
         label="GePpeTto (Italian, PUD IT)",
         color=color_it,
@@ -378,17 +396,22 @@ def plot_crossling_comparison(
         markersize=5,
     )
 
-    cog_en = center_of_gravity(d_en["probing_sel_next"], normalize=True)
-    cog_it = center_of_gravity(d_it["probing_sel_next"], normalize=True)
+    cog_en = center_of_gravity(d_en["probing_sel_next"], normalize=use_tau)
+    cog_it = center_of_gravity(d_it["probing_sel_next"], normalize=use_tau)
 
-    ax.axvline(cog_en, color=color_en, linestyle=":", alpha=0.8, label=f"GPT-2 CoG ({cog_en:.3f})")
-    ax.axvline(cog_it, color=color_it, linestyle=":", alpha=0.8, label=f"GePpeTto CoG ({cog_it:.3f})")
+    label_cog_en = f"GPT-2 CoG ({cog_en:.3f})" if use_tau else f"GPT-2 CoG (L{cog_en:.2f})"
+    label_cog_it = f"GePpeTto CoG ({cog_it:.3f})" if use_tau else f"GePpeTto CoG (L{cog_it:.2f})"
+
+    ax.axvline(cog_en, color=color_en, linestyle=":", alpha=0.8, label=label_cog_en)
+    ax.axvline(cog_it, color=color_it, linestyle=":", alpha=0.8, label=label_cog_it)
 
     ax.set_title("(a) Probing: Next-Token UPOS Selectivity", fontsize=11, fontweight="bold")
-    ax.set_xlabel(r"Relative Layer Depth $\tau = l / L$", fontsize=10)
+    ax.set_xlabel(xlabel, fontsize=10)
     ax.set_ylabel("Selectivity (Task Acc - Control Acc)", fontsize=10)
-    ax.set_xlim(-0.02, 1.02)
+    ax.set_xlim(*xlim)
     ax.set_ylim(-0.02, 0.32)
+    if not use_tau:
+        ax.set_xticks(range(0, 13))
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend(loc="upper left", fontsize=8.5, framealpha=0.9)
 
@@ -401,33 +424,46 @@ def plot_crossling_comparison(
     c_upos_en, _, _ = compute_commitment_layer(u_en)
     c_upos_it, _, _ = compute_commitment_layer(u_it)
 
+    lbl_upos_en = (
+        f"GPT-2 (Commit @ L{c_upos_en}, $\\tau$={d_en['taus'][c_upos_en]:.3f})"
+        if use_tau
+        else f"GPT-2 (Commit @ Layer {c_upos_en})"
+    )
+    lbl_upos_it = (
+        f"GePpeTto (Commit @ L{c_upos_it}, $\\tau$={d_it['taus'][c_upos_it]:.3f})"
+        if use_tau
+        else f"GePpeTto (Commit @ Layer {c_upos_it})"
+    )
+
     ax.plot(
-        taus,
+        x_vals,
         u_en,
-        label=f"GPT-2 (Commit @ L{c_upos_en}, $\\tau$={taus[c_upos_en]:.3f})",
+        label=lbl_upos_en,
         color=color_en,
         linewidth=2.2,
         marker="o",
         markersize=5,
     )
     ax.plot(
-        taus,
+        x_vals,
         u_it,
-        label=f"GePpeTto (Commit @ L{c_upos_it}, $\\tau$={taus[c_upos_it]:.3f})",
+        label=lbl_upos_it,
         color=color_it,
         linewidth=2.2,
         marker="s",
         markersize=5,
     )
 
-    ax.scatter([taus[c_upos_en]], [u_en[c_upos_en]], color="crimson", s=90, zorder=5)
-    ax.scatter([taus[c_upos_it]], [u_it[c_upos_it]], color="crimson", s=90, zorder=5)
+    ax.scatter([x_vals[c_upos_en]], [u_en[c_upos_en]], color="crimson", s=90, zorder=5)
+    ax.scatter([x_vals[c_upos_it]], [u_it[c_upos_it]], color="crimson", s=90, zorder=5)
 
     ax.set_title("(b) Tuned Lens: Next-Token UPOS Bridge Accuracy", fontsize=11, fontweight="bold")
-    ax.set_xlabel(r"Relative Layer Depth $\tau = l / L$", fontsize=10)
+    ax.set_xlabel(xlabel, fontsize=10)
     ax.set_ylabel("UPOS Top-1 Accuracy", fontsize=10)
-    ax.set_xlim(-0.02, 1.02)
+    ax.set_xlim(*xlim)
     ax.set_ylim(-0.02, 0.45)
+    if not use_tau:
+        ax.set_xticks(range(0, 13))
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend(loc="upper left", fontsize=8.5, framealpha=0.9)
 
@@ -440,33 +476,46 @@ def plot_crossling_comparison(
     c_tok_en, _, _ = compute_commitment_layer(t_en)
     c_tok_it, _, _ = compute_commitment_layer(t_it)
 
+    lbl_tok_en = (
+        f"GPT-2 (Commit @ L{c_tok_en}, max={np.max(t_en):.3f})"
+        if use_tau
+        else f"GPT-2 (Commit @ Layer {c_tok_en}, max={np.max(t_en):.3f})"
+    )
+    lbl_tok_it = (
+        f"GePpeTto (Commit @ L{c_tok_it}, max={np.max(t_it):.3f})"
+        if use_tau
+        else f"GePpeTto (Commit @ Layer {c_tok_it}, max={np.max(t_it):.3f})"
+    )
+
     ax.plot(
-        taus,
+        x_vals,
         t_en,
-        label=f"GPT-2 (Commit @ L{c_tok_en}, max={np.max(t_en):.3f})",
+        label=lbl_tok_en,
         color=color_en,
         linewidth=2.2,
         marker="o",
         markersize=5,
     )
     ax.plot(
-        taus,
+        x_vals,
         t_it,
-        label=f"GePpeTto (Commit @ L{c_tok_it}, max={np.max(t_it):.3f})",
+        label=lbl_tok_it,
         color=color_it,
         linewidth=2.2,
         marker="s",
         markersize=5,
     )
 
-    ax.scatter([taus[c_tok_en]], [t_en[c_tok_en]], color="crimson", s=90, zorder=5)
-    ax.scatter([taus[c_tok_it]], [t_it[c_tok_it]], color="crimson", s=90, zorder=5)
+    ax.scatter([x_vals[c_tok_en]], [t_en[c_tok_en]], color="crimson", s=90, zorder=5)
+    ax.scatter([x_vals[c_tok_it]], [t_it[c_tok_it]], color="crimson", s=90, zorder=5)
 
     ax.set_title("(c) Tuned Lens: Exact Token Top-1 Accuracy", fontsize=11, fontweight="bold")
-    ax.set_xlabel(r"Relative Layer Depth $\tau = l / L$", fontsize=10)
+    ax.set_xlabel(xlabel, fontsize=10)
     ax.set_ylabel("Exact Token Top-1 Accuracy", fontsize=10)
-    ax.set_xlim(-0.02, 1.02)
+    ax.set_xlim(*xlim)
     ax.set_ylim(-0.02, 0.30)
+    if not use_tau:
+        ax.set_xticks(range(0, 13))
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend(loc="upper left", fontsize=8.5, framealpha=0.9)
 
@@ -479,26 +528,29 @@ def plot_crossling_comparison(
     kl_en = d_en["lenses"]["tuned"]["kl_mean"]
     kl_it = d_it["lenses"]["tuned"]["kl_mean"]
 
-    ax.plot(taus, ent_en, label="GPT-2: Entropy (H)", color=color_en, linestyle="-", linewidth=2.0)
-    ax.plot(taus, ent_it, label="GePpeTto: Entropy (H)", color=color_it, linestyle="-", linewidth=2.0)
+    ax.plot(x_vals, ent_en, label="GPT-2: Entropy (H)", color=color_en, linestyle="-", linewidth=2.0)
+    ax.plot(x_vals, ent_it, label="GePpeTto: Entropy (H)", color=color_it, linestyle="-", linewidth=2.0)
 
     ax_twin = ax.twinx()
-    ax_twin.plot(taus, kl_en, label=r"GPT-2: $D_{\mathrm{KL}}$ to Final", color=color_en, linestyle=":", linewidth=2.0)
-    ax_twin.plot(taus, kl_it, label=r"GePpeTto: $D_{\mathrm{KL}}$ to Final", color=color_it, linestyle=":", linewidth=2.0)
+    ax_twin.plot(x_vals, kl_en, label=r"GPT-2: $D_{\mathrm{KL}}$ to Final", color=color_en, linestyle=":", linewidth=2.0)
+    ax_twin.plot(x_vals, kl_it, label=r"GePpeTto: $D_{\mathrm{KL}}$ to Final", color=color_it, linestyle=":", linewidth=2.0)
 
     ax.set_title("(d) Tuned Lens: Prediction Uncertainty & Final Convergence", fontsize=11, fontweight="bold")
-    ax.set_xlabel(r"Relative Layer Depth $\tau = l / L$", fontsize=10)
+    ax.set_xlabel(xlabel, fontsize=10)
     ax.set_ylabel("Shannon Entropy [nats] (Solid -)", fontsize=10)
     ax_twin.set_ylabel(r"$D_{\mathrm{KL}}(P_L \parallel P_l)$ [nats] (Dotted :)", fontsize=10)
-    ax.set_xlim(-0.02, 1.02)
+    ax.set_xlim(*xlim)
+    if not use_tau:
+        ax.set_xticks(range(0, 13))
     ax.grid(True, linestyle="--", alpha=0.4)
 
     lines1, labels1 = ax.get_legend_handles_labels()
     lines2, labels2 = ax_twin.get_legend_handles_labels()
     ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right", fontsize=8, framealpha=0.9)
 
+    subtitle_mode = r"(by Relative Depth $\tau = l / L$)" if use_tau else r"(by Transformer Layer $l \in [0, 12]$)"
     plt.suptitle(
-        "Cross-Linguistic Comparison: GPT-2 (English) vs. GePpeTto (Italian)",
+        f"Cross-Linguistic Comparison: GPT-2 (English) vs. GePpeTto (Italian)\n{subtitle_mode}",
         fontsize=13,
         fontweight="bold",
         y=0.995,
@@ -538,14 +590,24 @@ def plot_all_overlays(
 
     for model in ("gpt2", "geppetto"):
         target_path = out_dir / f"{model}_overlay.png"
-        plot_model_overlay(model, save_path=target_path)
+        plot_model_overlay(model, save_path=target_path, use_tau=False)
         plt.close("all")
         saved_paths[model] = target_path
 
-    # Cross-linguistic comparison figure
+        target_path_tau = out_dir / f"{model}_overlay_tau.png"
+        plot_model_overlay(model, save_path=target_path_tau, use_tau=True)
+        plt.close("all")
+        saved_paths[f"{model}_tau"] = target_path_tau
+
+    # Cross-linguistic comparison figures
     cross_path = out_dir / "crossling_gpt2_vs_geppetto.png"
-    plot_crossling_comparison(save_path=cross_path)
+    plot_crossling_comparison(save_path=cross_path, use_tau=False)
     plt.close("all")
     saved_paths["crossling"] = cross_path
+
+    cross_tau_path = out_dir / "crossling_gpt2_vs_geppetto_tau.png"
+    plot_crossling_comparison(save_path=cross_tau_path, use_tau=True)
+    plt.close("all")
+    saved_paths["crossling_tau"] = cross_tau_path
 
     return saved_paths
