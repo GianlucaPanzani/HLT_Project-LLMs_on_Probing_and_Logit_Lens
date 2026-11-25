@@ -96,7 +96,7 @@ fig = _build_heatmap(
 )
 st.plotly_chart(
     fig,
-    use_container_width=True,
+    width="stretch",
     config={"scrollZoom": True, "displaylogo": False},
     key="lens_heatmap_chart",
 )

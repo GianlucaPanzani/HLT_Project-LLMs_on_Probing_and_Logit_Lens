@@ -42,5 +42,12 @@ def test_format_delta_table_rounds():
     assert view.iloc[0]["delta_cog"] == 0.1111
 
 
-def test_crossling_tab_exposes_render():
-    assert callable(crossling.render)
+def test_crossling_page_missing_results_does_not_crash(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setattr(crossling, "_load_probing_results", lambda: None)
+    page = AppTest.from_file(str(APP_DIR / "pages" / "04_Crossling.py"))
+    page.run()
+    assert not page.exception
+    assert len(page.info) == 1
+    assert "No probing results found" in page.info[0].value

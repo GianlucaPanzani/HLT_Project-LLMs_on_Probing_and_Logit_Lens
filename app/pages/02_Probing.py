@@ -147,29 +147,37 @@ st.caption(
     "Accuracies are averaged over the available paired seeds; negative selectivity is preserved."
 )
 
-# CoG summary table (UI body inlined from former _render_summary helper)
-if not SUMMARY_PATH.is_file():
-    st.stop()
-
+# CoG summary table (UI body moved from former _render_summary helper)
+st.subheader("Center of gravity")
 try:
     summary = _load_parquet(SUMMARY_PATH)
-except Exception:
+except FileNotFoundError:
+    st.info("Missing results/summary/cog.parquet. Run PYTHONPATH=src python scripts/11_summarize_probing.py.")
+    st.stop()
+except (OSError, ValueError) as err:
+    st.error(f"Could not read the probing summary: {err}")
     st.stop()
 
-task_control = CONTROL_TASKS.get(task)
-task_summary = summary.loc[summary["task"].eq(task)] if "task" in summary.columns else summary
-if task_summary.empty or "cog_norm" not in task_summary.columns:
+keys = CONFIG_COLUMNS + ["task"]
+missing_summary = sorted(set(keys + ["cog_norm"]) - set(summary.columns))
+if missing_summary:
+    st.error(f"Missing summary columns: {missing_summary}.")
     st.stop()
 
-merge_cols = ["model", "init", "pooling"]
-available = [c for c in merge_cols if c in selected.columns and c in task_summary.columns]
-merged = selected[available].drop_duplicates().merge(
-    task_summary[available + ["cog_norm", "task"]],
-    on=available,
-    how="left",
-    indicator=True,
-)
-if merged.loc[merged["_merge"].eq("left_only")].shape[0]:
+configurations = selected.loc[selected["task"].eq(task), keys].drop_duplicates()
+try:
+    merged = configurations.merge(
+        summary,
+        on=keys,
+        how="left",
+        validate="one_to_one",
+        indicator=True,
+    )
+except ValueError as err:
+    st.error(f"Could not match the probing summary: {err}")
+    st.stop()
+
+if merged["_merge"].eq("left_only").any():
     st.info("Some selected configurations have no summary. Run PYTHONPATH=src python scripts/11_summarize_probing.py.")
 merged = merged.loc[merged["_merge"].eq("both")]
 if merged.empty:

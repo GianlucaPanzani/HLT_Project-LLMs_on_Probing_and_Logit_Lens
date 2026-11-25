@@ -5,11 +5,15 @@ UI body for the cross-linguistic page. Helpers and cached loaders live in app/ta
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
 import streamlit as st
 from tabs.crossling import (
     EVAL_SETS,
     METRICS,
     PAIR_IDS,
+    PROBE_DEFAULTS,
     _eval_treebanks,
     _format_delta_table,
     _load_curves,
@@ -17,11 +21,11 @@ from tabs.crossling import (
     _load_probing_results,
     _pair_spec,
     _plot_en_it,
-    _render_matplotlib_overview,
     _series_for_metric,
 )
 
 from lib.paths import probing_result_path
+from viz.crossling_plots import plot_delta_cog, plot_selectivity_pairs
 
 st.title("Cross-Linguistic")
 st.caption("Run locally with: `PYTHONPATH=src streamlit run app/app.py`")
@@ -91,7 +95,7 @@ else:
     title = f"{pair_id} · {EVAL_SETS[eval_set]} · {METRICS[metric]}"
     st.plotly_chart(
         _plot_en_it(en_df, it_df, metric, title=title),
-        use_container_width=True,
+        width="stretch",
         key="crossling_chart",
     )
 
@@ -100,9 +104,23 @@ delta_view = _format_delta_table(delta)
 pair_delta = delta_view.loc[delta_view["pair"] == pair_id] if "pair" in delta_view.columns else delta_view
 st.dataframe(
     pair_delta if not pair_delta.empty else delta_view,
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
 )
 
 with st.expander("Overview figures (matplotlib)", expanded=False):
-    _render_matplotlib_overview(curves, delta)
+    with tempfile.TemporaryDirectory(prefix="crossling-demo-") as tmp:
+        tmp_path = Path(tmp)
+        pairs_path = tmp_path / "selectivity_pairs.png"
+        delta_path = tmp_path / "delta_cog.png"
+        try:
+            plot_selectivity_pairs(curves, delta, pairs_path, **PROBE_DEFAULTS)
+            plot_delta_cog(delta, delta_path)
+        except (ValueError, KeyError) as err:
+            st.warning(f"Could not build overview figures: {err}")
+        else:
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.image(str(pairs_path), caption="Selectivity vs τ (all pairs)", width="stretch")
+            with col_b:
+                st.image(str(delta_path), caption="Delta CoG by pair", width="stretch")

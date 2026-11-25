@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -19,11 +19,6 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 from tabs import cka  # noqa: E402, I001
-
-
-def test_cka_tab_exposes_render():
-    """Verify that cka module exposes a callable render function."""
-    assert callable(cka.render)
 
 
 def test_parse_cka_filename():
@@ -118,31 +113,34 @@ def _make_mock_probing_df(model: str, num_layers: int, treebank: str = "ewt") ->
     return pd.DataFrame(rows)
 
 
-def test_render_missing_dir(monkeypatch):
-    """Verify render gives st.info and does not crash when CKA dir is missing."""
-    mock_st = MagicMock()
-    monkeypatch.setattr(cka, "st", mock_st)
+def test_compression_page_missing_dir(monkeypatch):
+    """Verify 03_Compression.py gives st.info and does not crash when CKA dir is missing."""
+    from streamlit.testing.v1 import AppTest
+
     monkeypatch.setattr(cka, "CKA_DIR", Path("/nonexistent/cka/dir"))
+    page = AppTest.from_file(str(APP_DIR / "pages" / "03_Compression.py"))
+    page.run(timeout=30)
+    assert not page.exception
+    assert len(page.info) == 1
+    assert "No CKA results directory found" in page.info[0].value
 
-    cka.render()
-    mock_st.info.assert_called_once()
-    assert "No CKA results directory found" in mock_st.info.call_args[0][0]
 
+def test_compression_page_empty_dir(monkeypatch, tmp_path):
+    """Verify 03_Compression.py gives st.info when CKA dir exists but has no parquet files."""
+    from streamlit.testing.v1 import AppTest
 
-def test_render_empty_dir(monkeypatch, tmp_path):
-    """Verify render gives st.info when CKA dir exists but has no parquet files."""
-    mock_st = MagicMock()
-    monkeypatch.setattr(cka, "st", mock_st)
     monkeypatch.setattr(cka, "CKA_DIR", tmp_path)
+    page = AppTest.from_file(str(APP_DIR / "pages" / "03_Compression.py"))
+    page.run()
+    assert not page.exception
+    assert len(page.info) == 1
+    assert "No CKA results found" in page.info[0].value
 
-    cka.render()
-    mock_st.info.assert_called_once()
-    assert "No CKA results found" in mock_st.info.call_args[0][0]
 
+def test_compression_page_with_full_data(monkeypatch, tmp_path):
+    """Verify 03_Compression.py with mock CKA and probing data displays all components."""
+    from streamlit.testing.v1 import AppTest
 
-def test_render_with_full_data(monkeypatch, tmp_path):
-    """Verify render with mock CKA and probing data displays all components."""
-    # Create CKA parquet file
     cka_file = tmp_path / "bert__vs__distilbert__ewt.parquet"
     _make_mock_cka_df().to_parquet(cka_file)
 
@@ -153,49 +151,38 @@ def test_render_with_full_data(monkeypatch, tmp_path):
     _make_mock_probing_df("bert", 12).to_parquet(bert_file)
     _make_mock_probing_df("distilbert", 6).to_parquet(distil_file)
 
-    mock_st = MagicMock()
-    # Configure selectbox/checkbox behavior
-    mock_st.columns.side_effect = lambda n: [MagicMock() for _ in range(n if isinstance(n, int) else len(n))]
-    mock_st.checkbox.return_value = True
-
-    monkeypatch.setattr(cka, "st", mock_st)
     monkeypatch.setattr(cka, "CKA_DIR", tmp_path)
     monkeypatch.setattr(cka, "PROBING_DIR", probing_dir)
 
     with patch("lib.paths.probing_result_path") as mock_prp:
         mock_prp.side_effect = lambda m, *args: bert_file if m == "bert" else distil_file
-        cka.render()
+        page = AppTest.from_file(str(APP_DIR / "pages" / "03_Compression.py"))
+        page.run()
 
-    # Heatmap should be rendered via plotly_chart or pyplot
-    assert mock_st.plotly_chart.called or mock_st.pyplot.called
-    # Dataframe table should be rendered
-    assert mock_st.dataframe.called
-    # Metric cards should be rendered
-    assert mock_st.columns.called
+    assert not page.exception
+    assert len(page.get("plotly_chart")) >= 1
+    assert len(page.dataframe) == 1
 
 
-def test_render_cka_present_probing_missing(monkeypatch, tmp_path):
-    """Verify render when CKA is present but probing data is missing."""
+def test_compression_page_cka_present_probing_missing(monkeypatch, tmp_path):
+    """Verify 03_Compression.py when CKA is present but probing data is missing."""
+    from streamlit.testing.v1 import AppTest
+
     cka_file = tmp_path / "bert__vs__distilbert__ewt.parquet"
     _make_mock_cka_df().to_parquet(cka_file)
 
     empty_probing_dir = tmp_path / "probing"
     empty_probing_dir.mkdir()
 
-    mock_st = MagicMock()
-    mock_st.columns.side_effect = lambda n: [MagicMock() for _ in range(n if isinstance(n, int) else len(n))]
-    mock_st.checkbox.return_value = True
-
-    monkeypatch.setattr(cka, "st", mock_st)
     monkeypatch.setattr(cka, "CKA_DIR", tmp_path)
     monkeypatch.setattr(cka, "PROBING_DIR", empty_probing_dir)
 
     with patch("lib.paths.probing_result_path") as mock_prp:
         mock_prp.side_effect = lambda m, *args: empty_probing_dir / f"{m}.parquet"
-        cka.render()
+        page = AppTest.from_file(str(APP_DIR / "pages" / "03_Compression.py"))
+        page.run()
 
-    # Heatmap was still rendered!
-    assert mock_st.plotly_chart.called or mock_st.pyplot.called
-    # And st.info was called to notify about missing probing results
-    info_calls = [call[0][0] for call in mock_st.info.call_args_list]
-    assert any("Probing results" in msg for msg in info_calls)
+    assert not page.exception
+    assert len(page.get("plotly_chart")) >= 1
+    info_msgs = [item.value for item in page.info]
+    assert any("Probing results" in msg for msg in info_msgs)

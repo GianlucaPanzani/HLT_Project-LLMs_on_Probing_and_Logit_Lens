@@ -1,7 +1,6 @@
 """Tests for the A5 sidebar multipage navigation router.
 
-All tests use synthetic data or filesystem inspection only; no model downloads,
-no Streamlit rendering harness required.
+All tests use synthetic data or filesystem inspection only; no model downloads.
 """
 
 from __future__ import annotations
@@ -10,9 +9,12 @@ import ast
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
-APP_DIR = Path(__file__).parent.parent / "app"
+pytest.importorskip("streamlit")
+
+APP_DIR = Path(__file__).resolve().parents[1] / "app"
 PAGES_DIR = APP_DIR / "pages"
 
 
@@ -32,16 +34,6 @@ def test_pages_discovered():
     assert "04_Crossling.py" in names
 
 
-def test_synthetic_page_discovered(tmp_path):
-    """A synthetic page under app/pages/ is discovered by the router pattern
-    without any edit to app/app.py."""
-    # Simulate the router's glob logic on tmp_path
-    fake_page = tmp_path / "99_Synthetic.py"
-    fake_page.write_text("import streamlit as st\nst.write('synthetic')\n")
-    page_files = sorted(tmp_path.glob("[0-9][0-9]_*.py"))
-    assert any(p.name == "99_Synthetic.py" for p in page_files)
-
-
 def test_pages_sorted_by_number():
     """Pages are sorted numerically so the sidebar order is deterministic."""
     page_files = sorted(PAGES_DIR.glob("[0-9][0-9]_*.py"))
@@ -56,24 +48,20 @@ def test_pages_sorted_by_number():
 
 
 def test_app_does_not_import_tabs():
-    """app/app.py must not import tabs.* or pages.* at the module level.
-
-    It discovers pages by filename; importing tabs eagerly would trigger model
-    loading on every page navigation.
-    """
+    """app/app.py must not import tabs.* or pages.* at the module level."""
     app_src = (APP_DIR / "app.py").read_text()
     tree = ast.parse(app_src)
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             if isinstance(node, ast.ImportFrom):
                 module = node.module or ""
-                assert not module.startswith("tabs"), (
-                    f"app.py imports tabs module '{module}' — this causes eager model loading."
+                assert not module.startswith(("tabs", "pages")), (
+                    f"app.py imports '{module}' — this causes eager loading."
                 )
             else:
                 for alias in node.names:
-                    assert not alias.name.startswith("tabs"), (
-                        f"app.py imports tabs module '{alias.name}' — this causes eager model loading."
+                    assert not alias.name.startswith(("tabs", "pages")), (
+                        f"app.py imports '{alias.name}' — this causes eager loading."
                     )
 
 
@@ -86,43 +74,77 @@ def test_app_uses_st_navigation():
 
 
 # ---------------------------------------------------------------------------
-# 3. Lazy loading: importing probing tab does not load torch
+# 3. Synthetic router: 5th page discovery + helper exclusion + lazy execution
+# ---------------------------------------------------------------------------
+
+
+def test_synthetic_router_discovers_fifth_page_and_executes_lazily(tmp_path):
+    """A synthetic 5th page is discovered without editing app.py, helpers are
+    excluded, and only the selected page executes."""
+    from streamlit.testing.v1 import AppTest
+
+    router_copy = tmp_path / "app.py"
+    router_copy.write_text((APP_DIR / "app.py").read_text())
+
+    pages_dir = tmp_path / "pages"
+    pages_dir.mkdir()
+    log_file = tmp_path / "executed.txt"
+
+    for idx, title in ((1, "First"), (2, "Second"), (3, "Third"), (4, "Fourth"), (5, "Fifth")):
+        (pages_dir / f"0{idx}_{title}.py").write_text(
+            "import streamlit as st\n"
+            "from pathlib import Path\n"
+            f"with Path({str(log_file)!r}).open('a') as f:\n"
+            f"    f.write('{idx}\\n')\n"
+            f"st.title('{title}')\n"
+        )
+    # Helper module inside pages/ must not be registered by the [0-9][0-9]_*.py glob.
+    (pages_dir / "helper_module.py").write_text(
+        f"from pathlib import Path\nPath({str(log_file)!r}).write_text('helper\\n')\n"
+    )
+
+    at = AppTest.from_file(str(router_copy))
+    at.run()
+    assert not at.exception
+    assert [t.value for t in at.title] == ["First"]
+    executed = log_file.read_text().splitlines()
+    assert executed == ["1"], f"Expected lazy execution of page 1 only, got: {executed}"
+
+    # Switch to the synthetic 5th page using st.switch_page via session/page run
+    at.switch_page("pages/05_Fifth.py").run()
+    assert not at.exception
+    assert [t.value for t in at.title] == ["Fifth"]
+    executed = log_file.read_text().splitlines()
+    assert executed == ["1", "5"], f"Expected only pages 1 and 5 to execute, got: {executed}"
+
+
+# ---------------------------------------------------------------------------
+# 4. Lazy loading: importing probing tab does not load torch
 # ---------------------------------------------------------------------------
 
 
 def test_probing_tab_does_not_load_torch():
-    """Importing app/tabs/probing must not cause torch to be imported.
-
-    This guarantees that visiting the Probing page never triggers GPU/model
-    loading silently in the background.
-    """
-    # Remove any torch already imported in this process
+    """Importing app/tabs/probing must not cause torch to be imported."""
     torch_keys = [k for k in sys.modules if k == "torch" or k.startswith("torch.")]
     saved = {k: sys.modules.pop(k) for k in torch_keys}
 
-    # Also remove cached tabs.probing import if it was already loaded
-    for key in [k for k in sys.modules if "tabs.probing" in k or k == "tabs.probing"]:
+    for key in [k for k in sys.modules if k == "tabs.probing" or k.startswith("tabs.probing.")]:
         sys.modules.pop(key)
 
     try:
-        # Temporarily add app/ to path so "from tabs.probing import ..." resolves
         if str(APP_DIR) not in sys.path:
             sys.path.insert(0, str(APP_DIR))
         import tabs.probing  # noqa: F401
 
         assert "torch" not in sys.modules, (
-            "Importing tabs.probing caused torch to be loaded — "
-            "move torch imports inside functions or guard them."
+            "Importing tabs.probing caused torch to be loaded."
         )
-    except ImportError:
-        pytest.skip("tabs.probing cannot be imported in this environment (missing deps).")
     finally:
-        # Restore torch modules
         sys.modules.update(saved)
 
 
 # ---------------------------------------------------------------------------
-# 4. Page files: each page contains the UI body, not a render() delegation
+# 5. UI/helper separation: pages have UI body, tabs do not expose render()
 # ---------------------------------------------------------------------------
 
 
@@ -135,25 +157,109 @@ def test_probing_tab_does_not_load_torch():
         "04_Crossling.py",
     ],
 )
-def test_page_does_not_merely_call_render(page_name: str):
-    """Page files must contain direct st.* widget calls, not just 'tabs.render()'.
-
-    Per A5 spec: 'a tabs.render() API is no longer required'.
-    """
+def test_page_has_ui_body_and_imports_helpers(page_name: str):
+    """Page files must contain direct st.* widget calls and import helpers from tabs."""
     page_src = (PAGES_DIR / page_name).read_text()
-    # The page must NOT be a thin wrapper that only calls some_module.render()
-    # Heuristic: if the file is very short AND contains only a render() call, fail.
-    # We check positively that the file contains st.* calls.
     assert "st." in page_src, f"{page_name} has no st.* calls — it must contain the UI body."
-    # Also check it imports from tabs (helpers), not that render is the whole body
     assert "from tabs." in page_src or "import tabs." in page_src, (
         f"{page_name} does not import any helper from app/tabs/."
     )
 
 
+@pytest.mark.parametrize(
+    "tab_name",
+    ["lens_heatmap.py", "probing.py", "cka.py", "crossling.py"],
+)
+def test_tab_helper_has_no_render(tab_name: str):
+    """Migrated helper modules under app/tabs/ must not keep a UI render() function."""
+    tree = ast.parse((APP_DIR / "tabs" / tab_name).read_text())
+    top_defs = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
+    assert "render" not in top_defs, f"app/tabs/{tab_name} still defines render()."
+
+
 # ---------------------------------------------------------------------------
-# 5. PAGES.md documents the reserved filenames
+# 6. Page-level UI smoke tests (synthetic data / missing artifacts)
 # ---------------------------------------------------------------------------
+
+
+def test_probing_page_synthetic_does_not_load_torch(monkeypatch, tmp_path):
+    """Running 02_Probing.py renders curves and CoG without importing torch."""
+    from streamlit.testing.v1 import AppTest
+
+    if str(APP_DIR) not in sys.path:
+        sys.path.insert(0, str(APP_DIR))
+    from tabs import probing as probing_tab
+
+    probing_dir = tmp_path / "probing"
+    probing_dir.mkdir()
+    rows = []
+    for model, kind in (("bert", "encoder"), ("gpt2", "decoder")):
+        for task in ("upos", "control"):
+            for layer in range(3):
+                rows.append({
+                    "model": model, "kind": kind, "lang": "en", "probe": "linear",
+                    "train_treebank": "ewt", "eval_treebank": "ewt", "task": task,
+                    "init": "pretrained", "pooling": "first", "seed": 42,
+                    "layer": layer, "L": 2, "tau": layer / 2,
+                    "acc": 0.7 + 0.05 * layer if task == "upos" else 0.4,
+                    "n_train": 50, "n_eval": 20, "hparams": "{}",
+                })
+    pd.DataFrame(rows).to_parquet(probing_dir / "synthetic.parquet")
+
+    summary_path = tmp_path / "cog.parquet"
+    pd.DataFrame([
+        {
+            "model": "bert", "train_treebank": "ewt", "eval_treebank": "ewt",
+            "probe": "linear", "init": "pretrained", "pooling": "first",
+            "task": "upos", "cog_norm": 0.6,
+        },
+        {
+            "model": "gpt2", "train_treebank": "ewt", "eval_treebank": "ewt",
+            "probe": "linear", "init": "pretrained", "pooling": "first",
+            "task": "upos", "cog_norm": 0.55,
+        },
+    ]).to_parquet(summary_path)
+
+    monkeypatch.setattr(probing_tab, "PROBING_DIR", probing_dir)
+    monkeypatch.setattr(probing_tab, "SUMMARY_PATH", summary_path)
+
+    torch_keys = [k for k in sys.modules if k == "torch" or k.startswith("torch.")]
+    saved = {k: sys.modules.pop(k) for k in torch_keys}
+    try:
+        page = AppTest.from_file(str(PAGES_DIR / "02_Probing.py"))
+        page.run()
+        assert not page.exception
+        assert len(page.get("plotly_chart")) == 1
+        assert len(page.dataframe) == 1
+        assert "torch" not in sys.modules
+    finally:
+        sys.modules.update(saved)
+
+
+def test_lens_page_empty_text_does_not_load_model(monkeypatch):
+    """Empty sentence on 01_Lens_Heatmap.py shows an info message without loading models."""
+    from streamlit.testing.v1 import AppTest
+
+    if str(APP_DIR) not in sys.path:
+        sys.path.insert(0, str(APP_DIR))
+    from tabs import lens_heatmap
+
+    monkeypatch.setitem(lens_heatmap.DEFAULT_SENTENCES, "gpt2", "")
+    monkeypatch.setattr(
+        lens_heatmap,
+        "load_lens_params",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not load params")),
+    )
+    monkeypatch.setattr(
+        lens_heatmap,
+        "load_lens_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not load model")),
+    )
+    page = AppTest.from_file(str(PAGES_DIR / "01_Lens_Heatmap.py"))
+    page.run(timeout=30)
+    assert not page.exception
+    assert len(page.info) == 1
+    assert "Enter a sentence" in page.info[0].value
 
 
 def test_pages_md_exists():
@@ -163,11 +269,6 @@ def test_pages_md_exists():
     content = pages_md.read_text()
     for name in ("01_Lens_Heatmap.py", "02_Probing.py", "03_Compression.py", "04_Crossling.py"):
         assert name in content, f"app/PAGES.md does not mention {name}."
-
-
-# ---------------------------------------------------------------------------
-# 6. Missing CKA / lens results do not crash the shell (parse check only)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -185,8 +286,4 @@ def test_page_is_valid_python(page_name: str):
     page_path = PAGES_DIR / page_name
     if not page_path.is_file():
         pytest.skip(f"{page_name} not found.")
-    source = page_path.read_text()
-    try:
-        ast.parse(source)
-    except SyntaxError as err:
-        pytest.fail(f"{page_name} has a syntax error: {err}")
+    ast.parse(page_path.read_text())

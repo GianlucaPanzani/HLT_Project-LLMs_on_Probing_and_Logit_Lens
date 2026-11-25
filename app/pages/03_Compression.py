@@ -15,7 +15,7 @@ from tabs.cka import (
     _parse_cka_filename,
 )
 
-from lib.paths import probing_result_path
+import lib.paths
 from viz.cka_plots import (
     plot_cka_heatmap,
     plot_selectivity_comparison,
@@ -117,7 +117,7 @@ except Exception as err:
     st.stop()
 
 if fig_plotly is not None:
-    st.plotly_chart(fig_plotly, use_container_width=True, key="cka_heatmap_plotly")
+    st.plotly_chart(fig_plotly, width="stretch", key="cka_heatmap_plotly")
 else:
     st.pyplot(fig_mpl, clear_figure=True)
 
@@ -134,8 +134,8 @@ st.caption(
 st.divider()
 st.subheader("Functional Alignment: Probing Selectivity & Center of Gravity")
 
-probing_bert_path = probing_result_path(model_a, cka_tb, "linear", "pretrained", "first")
-probing_distil_path = probing_result_path(model_b, cka_tb, "linear", "pretrained", "first")
+probing_bert_path = lib.paths.probing_result_path(model_a, cka_tb, "linear", "pretrained", "first")
+probing_distil_path = lib.paths.probing_result_path(model_b, cka_tb, "linear", "pretrained", "first")
 
 if not probing_bert_path.is_file() or not probing_distil_path.is_file():
     alt_bert = sorted(PROBING_DIR.glob(f"{model_a}__*.parquet")) if PROBING_DIR.is_dir() else []
@@ -217,7 +217,7 @@ fig_sel_plotly = plot_selectivity_comparison_plotly(
 )
 
 if fig_sel_plotly is not None:
-    st.plotly_chart(fig_sel_plotly, use_container_width=True, key="cka_sel_plotly")
+    st.plotly_chart(fig_sel_plotly, width="stretch", key="cka_sel_plotly")
 else:
     fig_sel_mpl = plot_selectivity_comparison(
         cog["bert_selectivity"],
@@ -251,7 +251,7 @@ try:
         pooling=pooling_type,
     )
     formatted_table = _format_mapping_table(mapping_df)
-    st.dataframe(formatted_table, use_container_width=True, hide_index=True)
+    st.dataframe(formatted_table, width="stretch", hide_index=True)
 except Exception as err:
     st.info(f"Could not build layer mapping table: {err}")
 
