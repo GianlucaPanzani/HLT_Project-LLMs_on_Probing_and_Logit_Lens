@@ -1,20 +1,16 @@
-"""Thin P8 entry point, discovered by the A5 sidebar router."""
+"""P8 comparison UI, discovered by the A5 sidebar router."""
 
 import streamlit as st
+from tabs.probe_comparison import METRICS, MODELS, load_results, prepare_comparison, summarize_comparison
 
-from tabs.probe_comparison import (
-    MODELS,
-    METRICS,
-    load_results,
-    prepare_comparison,
-    summarize_comparison
-)
 from viz.probing_plots import plot_probe_comparison
 
-st.title("Linear vs MLP")
+st.title(
+    body="Linear vs MLP",
+)
 st.caption(
-    "BERT and GPT-2 · pretrained · first pooling · current-word UPOS · trained on EWT. "
-    "Existing test results; no retraining."
+    body="BERT and GPT-2 · pretrained · first pooling · current-word UPOS · trained on EWT. "
+    "Existing test results; no retraining.",
 )
 eval_treebank = st.selectbox(
     label="Evaluation treebank",
@@ -52,15 +48,17 @@ st.plotly_chart(
     config={"toImageButtonOptions": {"filename": f"linear_vs_mlp_{eval_treebank}_seed{seed}", "scale": 2}},
 )
 st.caption(
-    f"Seed {seed}; no seed averaging. Delta = MLP − linear, in percentage points (pp). "
+    body=f"Seed {seed}; no seed averaging. Delta = MLP − linear, in percentage points (pp). "
     "Layer 0 is the embedding baseline. CoG uses layers 1…L and clips negative weights only "
-    "for CoG; undefined CoG is empty. Peaks include layer 0, with ties resolved to the first layer."
+    "for CoG; undefined CoG is empty. Peaks include layer 0, with ties resolved to the first layer.",
 )
 
-st.subheader("Peaks and center of gravity")
+st.subheader(
+    body="Peaks and center of gravity",
+)
 st.dataframe(
     data=summary[
-        ["model", "probe", "max_acc", "acc_peak_layer", "max_control_acc", "control_acc_peak_layer", 
+        ["model", "probe", "max_acc", "acc_peak_layer", "max_control_acc", "control_acc_peak_layer",
         "max_selectivity", "selectivity_peak_layer", "cog", "cog_norm"]
     ],
     hide_index=True,
@@ -74,7 +72,9 @@ st.download_button(
     key="probe_comparison_summary_download",
 )
 
-st.subheader("Layer-matched differences")
+st.subheader(
+    body="Layer-matched differences",
+)
 st.dataframe(
     data=comparison[
         ["model", "layer", "tau", "n_train", "n_eval"]
@@ -103,13 +103,12 @@ if eval_treebank == "ewt" and seed == 42:
         lower_layers = int(rows["delta_selectivity_pp"].lt(0).sum())
         best_gain = 100 * (rows["mlp_acc"].max() - rows["linear_acc"].max())
         st.markdown(
-            f"{model.upper()}: MLP best accuracy changes by {best_gain:+.2f} pp; "
+            body=f"{model.upper()}: MLP best accuracy changes by {best_gain:+.2f} pp; "
             f"MLP selectivity is lower at {lower_layers}/{len(rows)} layers. "
-            "The best accuracies can occur at different layers."
+            "The best accuracies can occur at different layers.",
         )
 st.caption(
-    "Evidence: docs/results/ws1_probing.md, sections 5–6 (EWT, seed 42). "
+    body="Evidence: docs/results/ws1_probing.md, sections 5–6 (EWT, seed 42). "
     "Results concern these two fitted probes and this control task; they do not establish the absence "
-    "of nonlinear linguistic information. No uncertainty or significance estimate is implied by one seed."
+    "of nonlinear linguistic information. No uncertainty or significance estimate is implied by one seed.",
 )
-

@@ -183,4 +183,3 @@ def summarize_comparison(comparison: pd.DataFrame) -> pd.DataFrame:
             summary["cog_norm"] = center_of_gravity(sel)
             summaries.append(summary)
     return pd.DataFrame(summaries)
-
