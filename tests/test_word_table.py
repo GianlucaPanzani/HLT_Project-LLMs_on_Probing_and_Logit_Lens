@@ -9,7 +9,7 @@ import pytest
 
 pytest.importorskip("torch")
 
-from lib.word_table import build_word_table, table_to_sentences
+from lib.word_table import build_word_table, table_to_sentences  # noqa: E402
 
 # ------------------------------------------------------------------ #
 # Fixtures
