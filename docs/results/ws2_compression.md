@@ -1,70 +1,45 @@
-# Workstream 2: Model Compression & Linguistic Hierarchy (Issues C1–C5)
+# Workstream 2: Model Compression & Linguistic Hierarchy
 
-Investigating how knowledge distillation affects internal representations: comparing `bert-base-cased` ($L=12$) and `distilbert-base-cased` ($L=6$) on Universal Dependencies part-of-speech tagging (`UD_English-EWT`).
+## BERT (L=12) vs DistilBERT (L=6)
 
-> **Baseline audit and evidence register (Issue C5)**
-> See [`../../src/ws2_compression/BASELINES.md`](../../src/ws2_compression/BASELINES.md) for the full artifact inventory (what is measured, what is missing, and what is N/A).
-> See [`../../src/ws2_compression/EVIDENCE.md`](../../src/ws2_compression/EVIDENCE.md) for literature comparisons, interpretation checks, and evidence-qualified findings for R1.
-
----
-
-## 1. Geometric Correspondence: Linear CKA (Issue C3)
-
-Centered Kernel Alignment (CKA) measures representation similarity between BERT layers (0..12) and DistilBERT layers (0..6) across aligned test tokens from the EWT test split.
+### CKA Heatmap
 
 ![CKA Heatmap](../../results/figures/ws2/bert__vs__distilbert_cka_heatmap.png)
 
-> ⚪ **Figure not yet available** — `results/figures/ws2/bert__vs__distilbert_cka_heatmap.png` is MISSING (the CKA parquet has not been computed yet). Run `PYTHONPATH=src python scripts/20_cka.py --model-a bert --model-b distilbert` to generate it. See [`../../src/ws2_compression/BASELINES.md §1`](../../src/ws2_compression/BASELINES.md).
+### 1:2 Layer Mapping Table
 
-### Summary of Geometric Alignment
-- If distillation preserved intermediate geometry linearly, the highest CKA value in DistilBERT column $l$ would fall exactly at BERT row $2l$ (the 1:2 diagonal marked in red).
-- Off-diagonal peaks reveal whether DistilBERT compresses layers uniformly or if lower/higher layers shift their representational role.
+For each DistilBERT layer *l*, the rigid mapping assumes BERT layer *2l*.
+The CKA-best column shows the BERT layer with highest geometric similarity.
 
----
+| DistilBERT | Rigid BERT | Rigid Acc | Rigid Sel | CKA-Best BERT | CKA-Best Acc | CKA-Best Sel | CKA |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.0000 | 0.0000 | 0.8723 | 0.1148 | 0.0000 | 0.8723 | 0.1148 | 0.9470 |
+| 1.0000 | 2.0000 | 0.9356 | 0.2309 | 1.0000 | 0.9062 | 0.1736 | 0.8774 |
+| 2.0000 | 4.0000 | 0.9486 | 0.2784 | 4.0000 | 0.9486 | 0.2784 | 0.8294 |
+| 3.0000 | 6.0000 | 0.9519 | 0.3181 | 5.0000 | 0.9507 | 0.2966 | 0.8068 |
+| 4.0000 | 8.0000 | 0.9512 | 0.3531 | 8.0000 | 0.9512 | 0.3531 | 0.7731 |
+| 5.0000 | 10.0000 | 0.9437 | 0.3772 | 11.0000 | 0.9433 | 0.3818 | 0.7285 |
+| 6.0000 | 12.0000 | 0.9366 | 0.3730 | 12.0000 | 0.9366 | 0.3730 | 0.6208 |
 
-## 2. Functional Correspondence: 1:2 Layer Mapping (Issue C4)
+### Selectivity Comparison
 
-Comparing UPOS probing accuracy, selectivity, and Center of Gravity ($\text{CoG}_{\text{norm}}$) under the rigid 1:2 mapping ($l \leftrightarrow 2l$) and the CKA-best mapping.
+![Selectivity](../../results/figures/ws2/bert_vs_distilbert_selectivity.png)
 
-### Layer Mapping Comparison Table
+- **BERT CoG_norm**: 0.5977
+- **DistilBERT CoG_norm**: 0.6263
 
-| DistilBERT Layer | Rigid BERT Layer | DistilBERT Acc | Rigid BERT Acc | Rigid Acc Diff | DistilBERT Sel | Rigid BERT Sel | Rigid Sel Diff | CKA-Best BERT | CKA-Best CKA | CKA-Best Sel |
-|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| 0 | 0 | — | — | — | — | — | — | ⚪ | ⚪ | ⚪ |
-| 1 | 2 | — | — | — | — | — | — | ⚪ | ⚪ | ⚪ |
-| 2 | 4 | — | — | — | — | — | — | ⚪ | ⚪ | ⚪ |
-| 3 | 6 | — | — | — | — | — | — | ⚪ | ⚪ | ⚪ |
-| 4 | 8 | — | — | — | — | — | — | ⚪ | ⚪ | ⚪ |
-| 5 | 10 | — | — | — | — | — | — | ⚪ | ⚪ | ⚪ |
-| 6 | 12 | — | — | — | — | — | — | ⚪ | ⚪ | ⚪ |
+### Interpretation
 
-*Note: Table values are populated automatically upon running `scripts/21_compression_report.py` once P4 probing results are generated.*
+1. **Geometric correspondence (CKA)**: The heatmap shows whether the
+   assumed 1:2 layer mapping (DistilBERT layer *l* ↔ BERT layer *2l*)
+   holds geometrically. Cells on the 1:2 diagonal should have the highest
+   CKA in their column if the mapping is accurate.
 
-> ⚪ **All entries are placeholders** — probing results and CKA matrix are MISSING. The placeholder `1.000` for layer-0 CKA that appeared in earlier versions was a synthetic default, **not** a measurement; it has been removed. See [`../../src/ws2_compression/BASELINES.md`](../../src/ws2_compression/BASELINES.md) for the full status of each required artifact.
+2. **Functional correspondence (Probing)**: The accuracy and selectivity
+   columns quantify whether paired layers encode the same amount of UPOS
+   information. Similar selectivity under the mapping suggests the
+   linguistic hierarchy is preserved during distillation.
 
----
-
-## 3. Linguistic Hierarchy & Depth Comparison
-
-Layer-wise selectivity trajectories plotted against relative depth $\tau = l / L \in [0, 1]$:
-
-![Selectivity Comparison](../../results/figures/ws2/bert_vs_distilbert_selectivity.png)
-
-> ⚪ **Figure not yet available** — requires probing parquets (MISSING). See [`../../src/ws2_compression/BASELINES.md §2`](../../src/ws2_compression/BASELINES.md).
-
-- **BERT $\text{CoG}_{\text{norm}}$**: (computed from linear UPOS probe)
-- **DistilBERT $\text{CoG}_{\text{norm}}$**: (computed from linear UPOS probe)
-- **$\Delta \text{CoG}_{\text{norm}}$**: $\text{CoG}_{\text{norm}}(\text{DistilBERT}) - \text{CoG}_{\text{norm}}(\text{BERT})$
-
----
-
-## 4. Interpretation & Research Questions
-
-1. **Does the 1:2 layer mapping hold geometrically (via CKA)?**
-   - DistilBERT is trained with a **multi-term** distillation loss: soft cross-entropy on softmax-temperature teacher logits **plus** a cosine embedding loss $\mathcal{L}_{cos}$ on hidden states, plus hard cross-entropy on MLM labels (Sanh et al. 2019, §3.2). It is therefore **incorrect** to say "distillation only matches output logits". Furthermore, DistilBERT layer $l$ is initialised from BERT layer $2l$ (Sanh et al. 2019, §3.3), so near-diagonal CKA is expected at initialisation. CKA evaluates whether this alignment persists — or strengthens — through training.
-
-2. **Does the mapping hold functionally (via UPOS probing)?**
-   - Comparing probing accuracy and selectivity reveals whether DistilBERT layer $l$ decodes morphosyntax with comparable strength to BERT layer $2l$.
-
-3. **Is the UPOS hierarchy compressed or shifted?**
-   - Comparing $\text{CoG}_{\text{norm}}$ shows whether syntactic information concentrates at the same relative depth ($\tau$) in DistilBERT as in BERT, or whether compression forces morphosyntax to peak earlier to free upper layers for task-level distillation.
+3. **Is the hierarchy compressed or shifted?** The CoG_norm comparison
+   indicates whether DistilBERT distributes morphosyntactic information
+   across its depth in the same relative proportions as BERT.

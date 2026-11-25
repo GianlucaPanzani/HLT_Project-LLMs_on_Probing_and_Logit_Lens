@@ -35,6 +35,7 @@ def plot_cka_heatmap(
     model_b_name: str = "DistilBERT",
     save_prefix: str | Path | None = None,
     mark_diagonal: bool = True,
+    mark_best: bool = False,
 ) -> tuple[plt.Figure, any]:
     """Generate a CKA heatmap (static + interactive).
 
@@ -52,6 +53,8 @@ def plot_cka_heatmap(
         ``{prefix}_cka_heatmap.html`` (if plotly is installed).
     mark_diagonal : bool
         If ``True``, highlight the 1:2 mapping diagonal cells.
+    mark_best : bool
+        If ``True``, highlight the CKA-best mapping cells for each column.
 
     Returns
     -------
@@ -87,6 +90,22 @@ def plot_cka_heatmap(
                 rect = plt.Rectangle((j - 0.5, i - 0.5), 1, 1, linewidth=2.5, edgecolor="red", facecolor="none")
                 ax.add_patch(rect)
 
+    # Mark CKA-best mapping
+    if mark_best:
+        for lb in layers_b:
+            col = df.loc[df["layer_b"] == lb]
+            if not col.empty:
+                best_row = col.loc[col["cka"].idxmax()]
+                best_la = int(best_row["layer_a"])
+                if best_la in layers_a:
+                    i = layers_a.index(best_la)
+                    j = layers_b.index(lb)
+                    rect = plt.Rectangle(
+                        (j - 0.45, i - 0.45), 0.9, 0.9,
+                        linewidth=2.0, edgecolor="#0284c7", linestyle="--", facecolor="none",
+                    )
+                    ax.add_patch(rect)
+
     ax.set_xticks(range(len(layers_b)))
     ax.set_xticklabels(layers_b)
     ax.set_yticks(range(len(layers_a)))
@@ -101,11 +120,45 @@ def plot_cka_heatmap(
     fig_plotly = None
     if go is not None:
         text_matrix = [[f"{matrix[i, j]:.3f}" for j in range(len(layers_b))] for i in range(len(layers_a))]
+        x_strs = [str(lb) for lb in layers_b]
+        y_strs = [str(la) for la in layers_a]
+
+        shapes = []
+        if mark_diagonal:
+            for lb in layers_b:
+                la_match = 2 * lb
+                if la_match in layers_a:
+                    i = layers_a.index(la_match)
+                    j = layers_b.index(lb)
+                    shapes.append(dict(
+                        type="rect",
+                        xref="x", yref="y",
+                        x0=j - 0.5, x1=j + 0.5,
+                        y0=i - 0.5, y1=i + 0.5,
+                        line=dict(color="#ef4444", width=3),
+                    ))
+
+        if mark_best:
+            for lb in layers_b:
+                col = df.loc[df["layer_b"] == lb]
+                if not col.empty:
+                    best_row = col.loc[col["cka"].idxmax()]
+                    best_la = int(best_row["layer_a"])
+                    if best_la in layers_a:
+                        i = layers_a.index(best_la)
+                        j = layers_b.index(lb)
+                        shapes.append(dict(
+                            type="rect",
+                            xref="x", yref="y",
+                            x0=j - 0.45, x1=j + 0.45,
+                            y0=i - 0.45, y1=i + 0.45,
+                            line=dict(color="#0284c7", width=2.5, dash="dash"),
+                        ))
 
         fig_plotly = go.Figure(data=go.Heatmap(
             z=matrix,
-            x=[str(lb) for lb in layers_b],
-            y=[str(la) for la in layers_a],
+            x=x_strs,
+            y=y_strs,
             text=text_matrix,
             texttemplate="%{text}",
             colorscale="Viridis",
@@ -116,7 +169,10 @@ def plot_cka_heatmap(
             title=f"Linear CKA: {model_a_name} vs {model_b_name}",
             xaxis_title=f"{model_b_name} layer",
             yaxis_title=f"{model_a_name} layer",
-            width=600, height=750,
+            xaxis=dict(type="category", categoryorder="array", categoryarray=x_strs),
+            yaxis=dict(type="category", categoryorder="array", categoryarray=y_strs),
+            shapes=shapes,
+            width=650, height=750,
         )
 
     # ---- Save ---------------------------------------------------------------
@@ -189,4 +245,100 @@ def plot_selectivity_comparison(
         path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(path, dpi=150, bbox_inches="tight")
 
+    return fig
+
+
+def plot_selectivity_comparison_plotly(
+    bert_sel: np.ndarray,
+    bert_tau: np.ndarray,
+    distil_sel: np.ndarray,
+    distil_tau: np.ndarray,
+    *,
+    bert_cog_norm: float | None = None,
+    distil_cog_norm: float | None = None,
+    model_a_name: str = "BERT (L=12)",
+    model_b_name: str = "DistilBERT (L=6)",
+) -> any:
+    """Plot selectivity vs relative depth for BERT and DistilBERT using Plotly.
+
+    Parameters
+    ----------
+    bert_sel : np.ndarray
+        BERT selectivity array (layers 0..L).
+    bert_tau : np.ndarray
+        BERT relative depth array.
+    distil_sel : np.ndarray
+        DistilBERT selectivity array (layers 0..L).
+    distil_tau : np.ndarray
+        DistilBERT relative depth array.
+    bert_cog_norm : float or None
+        If given, draw a vertical dashed line at this tau value.
+    distil_cog_norm : float or None
+        If given, draw a vertical dashed line at this tau value.
+    model_a_name : str
+        Name of model A in legend.
+    model_b_name : str
+        Name of model B in legend.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure or None
+        Plotly figure object, or None if plotly is not installed.
+    """
+    if go is None:
+        return None
+
+    fig = go.Figure()
+
+    # Model A (BERT) trace
+    fig.add_trace(go.Scatter(
+        x=bert_tau,
+        y=bert_sel,
+        mode="lines+markers",
+        name=model_a_name,
+        line=dict(color="#2563eb", width=2.5),
+        marker=dict(symbol="circle", size=7),
+        hovertemplate=f"<b>{model_a_name}</b><br>τ: %{{x:.3f}}<br>Selectivity: %{{y:.4f}}<extra></extra>",
+    ))
+
+    # Model B (DistilBERT) trace
+    fig.add_trace(go.Scatter(
+        x=distil_tau,
+        y=distil_sel,
+        mode="lines+markers",
+        name=model_b_name,
+        line=dict(color="#ea580c", width=2.5),
+        marker=dict(symbol="square", size=7),
+        hovertemplate=f"<b>{model_b_name}</b><br>τ: %{{x:.3f}}<br>Selectivity: %{{y:.4f}}<extra></extra>",
+    ))
+
+    # CoG_norm reference lines
+    if bert_cog_norm is not None and np.isfinite(bert_cog_norm):
+        fig.add_vline(
+            x=bert_cog_norm,
+            line_dash="dash",
+            line_color="#2563eb",
+            opacity=0.75,
+            annotation_text=f"BERT CoG={bert_cog_norm:.3f}",
+            annotation_position="top left",
+        )
+    if distil_cog_norm is not None and np.isfinite(distil_cog_norm):
+        fig.add_vline(
+            x=distil_cog_norm,
+            line_dash="dash",
+            line_color="#ea580c",
+            opacity=0.75,
+            annotation_text=f"DistilBERT CoG={distil_cog_norm:.3f}",
+            annotation_position="top right",
+        )
+
+    fig.update_layout(
+        title="UPOS Selectivity: BERT vs DistilBERT over Relative Depth τ",
+        xaxis_title="Relative depth τ = l / L",
+        yaxis_title="Selectivity",
+        xaxis=dict(range=[-0.02, 1.02]),
+        height=450,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        template="plotly_white",
+    )
     return fig

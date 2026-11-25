@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.colors import qualitative
+from plotly.subplots import make_subplots
 
 from lib.metrics import relative_depth, selectivity
 from lib.registry import list_models
@@ -165,4 +166,99 @@ def plot_layer_curves(
     )
     if x == "layer":
         figure.update_xaxes(dtick=1)
+    return figure
+
+
+def plot_probe_comparison(
+    comparison: pd.DataFrame, summary: pd.DataFrame, *, x: str = "layer",
+) -> go.Figure:
+    """Overlay both probes in three panels per model with separate CoG labels.
+
+    Parameters
+    ----------
+    comparison : pd.DataFrame
+        Validated P8 table: one row per model/layer for one seed, with
+        linear/mlp acc, control_acc and selectivity columns.
+    summary : pd.DataFrame
+        Peaks and CoG computed from exactly the same selected curves.
+    x : str
+        'layer' or 'tau'.
+
+    Returns
+    -------
+    go.Figure
+        Six panels with consistent probe styles, ready for display/export.
+        Negative selectivity remains visible; undefined CoG is omitted.
+    """
+    if x not in ("layer", "tau"):
+        raise ValueError("x must be 'layer' or 'tau'.")
+    metrics = ("acc", "control_acc", "selectivity")
+    labels = ("UPOS accuracy", "Control accuracy", "Selectivity")
+    models = ("bert", "gpt2")
+    figure = make_subplots(
+        rows=2,
+        cols=3,
+        subplot_titles=[f"{model.upper()} · {label}" for model in models for label in labels],
+        horizontal_spacing=0.07,
+        vertical_spacing=0.18,
+    )
+    for row, model in enumerate(models, start=1):
+        curves = comparison.loc[comparison["model"].eq(model)].sort_values("layer")
+        for probe_index, probe in enumerate(("linear", "mlp")):
+            color = qualitative.Plotly[probe_index]
+            dash = "solid" if probe == "linear" else "dash"
+            for col, (metric, label) in enumerate(zip(metrics, labels), start=1):
+                figure.add_trace(
+                    go.Scatter(
+                        x=curves[x],
+                        y=curves[f"{probe}_{metric}"],
+                        mode="lines+markers",
+                        name=probe,
+                        legendgroup=probe,
+                        showlegend=row == 1 and col == 1,
+                        line={"color": color, "dash": dash},
+                        hovertemplate=f"{model} · {probe}<br>{x}=%{{x}}<br>{label}=%{{y:.4f}}<extra></extra>",
+                    ),
+                    row=row,
+                    col=col,
+                )
+            matching = summary.loc[summary["model"].eq(model) & summary["probe"].eq(probe)]
+            if len(matching) != 1:
+                raise ValueError(f"Expected one CoG summary for {model}/{probe}.")
+            cog_column = "cog_norm" if x == "tau" else "cog"
+            cog = matching.iloc[0][cog_column]
+            if pd.notna(cog):
+                figure.add_vline(
+                    x=float(cog), line_color=color, line_dash=dash, line_width=1,
+                    row=row, col=3,
+                )
+                # Fixed, separate label rows avoid collisions when CoGs are close.
+                figure.add_annotation(
+                    x=0.98, y=0.98 - 0.13 * probe_index,
+                    xref="x domain", yref="y domain", xanchor="right", yanchor="top",
+                    text=f"{probe} {cog_column}={cog:.3f}",
+                    font={"color": color}, bgcolor="rgba(255,255,255,0.85)",
+                    showarrow=False, row=row, col=3,
+                )
+        for col in range(1, 4):
+            figure.update_xaxes(
+                title_text="Layer" if x == "layer" else "Relative depth (τ)",
+                range=[0, int(curves["L"].iloc[0])] if x == "layer" else [0, 1],
+                dtick=1 if x == "layer" else 0.25,
+                row=row, col=col,
+            )
+            if col < 3:
+                figure.update_yaxes(range=[0, 1], tickformat=".0%", row=row, col=col)
+            else:
+                figure.add_hline(y=0, line_color="gray", line_width=1, row=row, col=col)
+                figure.update_yaxes(rangemode="tozero", row=row, col=col)
+    metadata = comparison.iloc[0]
+    figure.update_layout(
+        template="plotly_white",
+        title=f"Linear vs MLP · {metadata['eval_treebank']} · seed {metadata['seed']} · pretrained · first · UPOS",
+        height=760,
+        hovermode="x unified",
+        legend={"orientation": "h", "y": 1.10, "x": 1, "xanchor": "right"},
+        margin={"t": 110, "b": 50},
+    )
     return figure

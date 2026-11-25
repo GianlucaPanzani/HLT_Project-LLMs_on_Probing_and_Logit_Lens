@@ -12,6 +12,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
+from lib.paths import probing_result_path  # noqa: E402
 from viz.lens_plots import (  # noqa: E402
     build_commitment_table,
     compute_commitment_layer,
@@ -19,6 +20,8 @@ from viz.lens_plots import (  # noqa: E402
     plot_crossling_comparison,
     plot_model_overlay,
 )
+
+_HAS_LENS_RESULTS = probing_result_path("gpt2", "ewt", "linear", "pretrained", "last").exists()
 
 
 def test_compute_commitment_layer_monotonic():
@@ -58,6 +61,7 @@ def test_compute_commitment_layer_empty_raises():
         compute_commitment_layer([])
 
 
+@pytest.mark.skipif(not _HAS_LENS_RESULTS, reason="Requires real probing results on disk")
 def test_load_overlay_data_gpt2():
     """Verify load_overlay_data loads real existing outputs with expected structure."""
     data = load_overlay_data("gpt2", "pud_en", "ewt")
@@ -73,6 +77,7 @@ def test_load_overlay_data_gpt2():
         assert len(data["lenses"][lens]["kl_mean"]) == 13
 
 
+@pytest.mark.skipif(not _HAS_LENS_RESULTS, reason="Requires real probing results on disk")
 def test_build_commitment_table_schema():
     """Verify commitment table has exact expected columns and non-null values."""
     df = build_commitment_table(models=("gpt2", "geppetto"))
@@ -91,6 +96,7 @@ def test_build_commitment_table_schema():
     assert (df["max_value"] > 0).all()
 
 
+@pytest.mark.skipif(not _HAS_LENS_RESULTS, reason="Requires real probing results on disk")
 def test_plot_model_overlay_runs(tmp_path: Path):
     """Verify plot_model_overlay runs and generates a valid image file."""
     save_file = tmp_path / "test_overlay.png"
@@ -102,12 +108,20 @@ def test_plot_model_overlay_runs(tmp_path: Path):
     plt.close(fig)
 
 
+@pytest.mark.skipif(not _HAS_LENS_RESULTS, reason="Requires real probing results on disk")
 def test_plot_crossling_comparison_runs(tmp_path: Path):
-    """Verify plot_crossling_comparison runs and generates a valid image file."""
+    """Verify plot_crossling_comparison runs and generates valid image files."""
     save_file = tmp_path / "test_crossling.png"
-    fig = plot_crossling_comparison(save_path=save_file)
+    fig = plot_crossling_comparison(save_path=save_file, use_tau=False)
 
     assert isinstance(fig, plt.Figure)
     assert save_file.exists()
     assert save_file.stat().st_size > 1000
     plt.close(fig)
+
+    save_file_tau = tmp_path / "test_crossling_tau.png"
+    fig_tau = plot_crossling_comparison(save_path=save_file_tau, use_tau=True)
+    assert isinstance(fig_tau, plt.Figure)
+    assert save_file_tau.exists()
+    assert save_file_tau.stat().st_size > 1000
+    plt.close(fig_tau)
