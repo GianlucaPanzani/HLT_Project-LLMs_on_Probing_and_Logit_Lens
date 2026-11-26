@@ -1,0 +1,128 @@
+\documentclass{article}
+
+
+% ready for submission
+\usepackage[final]{hlt_project_template}
+\usepackage{natbib}
+\bibliographystyle{plainnat}
+
+
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+
+
+\title{Your project title}
+
+
+\author{%
+  Name Surname\\
+  \texttt{email address} \\
+  \And
+  Name2 Surname2\\
+  \texttt{email address2}
+  \And
+  Name3 Surname3\\
+  \texttt{email address3}
+  \And
+  Name4 Surname4\\
+  \texttt{email address4}
+  \And
+  Name5 Surname5\\
+  \texttt{email address5}
+}
+
+
+\begin{document}
+
+
+\maketitle
+
+
+\begin{abstract}
+  A short summary of your project (including highlights on your results/insights).
+  Note that: the main text is limited to \textbf{10} content pages, including all figures and tables. Additional pages containing references, and technical appendices do not count.
+
+\end{abstract}
+
+
+\section{Introduction}
+Including the general context of your project; the motivations; an introduction to what are the contributions of your work; a short guide to the rest of the report.
+
+Note that (sub-)sections titles can be changed to your own preference while retaining the meaning of the content.
+
+\section{Background}
+Related works.
+Example reference \citep{lecun2015deep}.
+
+\section{Method}
+All relevant information on the method(s) you employed.
+
+\section{Experimental analysis}
+\subsection{Task(s)}
+Describe the task or tasks used in the experiments.
+\subsection{Experimental settings}
+Describe all the relevant aspects of the experimental setup used in your experiment (e.g., how you performed model selection for fine-tuning of hyper-parameters, all details regarding the learning / fine-tuning of your model, etc.)
+\subsection{Results} Provide results (figures and tables with mounerical results should go here). Provide insights and comments on the achieved results (also comparatively with literature). Possible ablation studies go here.
+
+\begin{table}
+  \caption{Example.}
+  \label{sample-table}
+  \centering
+  \begin{tabular}{lll}
+    \toprule
+    \multicolumn{2}{c}{Part}                   \\
+    \cmidrule(r){1-2}
+    Name     & Description     & Size ($\mu$m) \\
+    \midrule
+    Dendrite & Input terminal  & $\sim$100     \\
+    Axon     & Output terminal & $\sim$10      \\
+    Soma     & Cell body       & up to $10^6$  \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}
+  \centering
+  \fbox{\rule[-.5cm]{0cm}{4cm} \rule[-.5cm]{4cm}{0cm}}
+  \caption{Sample figure caption.}
+\end{figure}
+
+
+Example url link:
+\url{http://mirrors.ctan.org/macros/latex/contrib/natbib/natnotes.pdf}
+
+\section{Discussion}
+Overall discussion on the results, relevant insights.
+Frame your considerations in the current landscape of relevant research.
+
+\section{Conclusions}
+Draw conclusions and possibly delineate future works / possible improvements.
+
+\bibliography{bib.bib}
+
+
+\small
+
+
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\appendix
+
+\section{Appendix / supplemental material}
+
+
+Optionally include supplemental material (complete proofs, additional experiments and plots) in appendix.
+
+\end{document}
