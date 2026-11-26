@@ -155,7 +155,7 @@ Long format, columns `layer_a, layer_b, cka, n_tokens, seed`. For `bert` vs `dis
 ## 9. Lens conventions and results
 
 ### 9.1 Positions and targets
-- Lenses work on subword positions of decoder models (`gpt2`, `geppetto`). The prediction at position `t` is compared with the actual token at `t + 1`. The last position of a sequence has no target and is skipped.
+- Lenses work on subword positions of the decoder models in this section (`gpt2`, `geppetto`). Section 9.6 adds an opt-in `mgpt` standard logit lens that uses these same position rules. The prediction at position `t` is compared with the actual token at `t + 1`. The last position of a sequence has no target and is skipped.
 - On UD data (PUD) the input is the pre-split words from the word table, encoded with `lib.alignment.encode_words(..., add_bos=True)` exactly like feature extraction, so `word_ids` link positions to UD words. For the UPOS bridge, the position used for word `w` is the **last subword of `w`**, and the gold label is `next_upos` of `w`.
 - On WikiText the text is concatenated and cut into non-overlapping windows of 256 tokens; use at most 200 windows (about 50k positions).
 
@@ -167,7 +167,9 @@ Long format, columns `layer_a, layer_b, cka, n_tokens, seed`. For `bert` vs `dis
 ### 9.3 Aggregate results (`results/lens/{model}__{dataset}.parquet`)
 `dataset` is `pud_en`, `pud_it` or `wikitext`. One row per (lens, layer).
 Columns: `model, dataset, lens, layer, L, tau, top1_acc, entropy_mean, kl_mean, upos_top1_acc, n_positions`. `upos_top1_acc` is null for WikiText.
-Entropy and KL use natural log (nats). KL is `KL(P_L || P_l)`.
+Entropy and KL use natural log (nats). KL is `KL(P_L || P_l)`. `tau` is `layer / L` (`lib.metrics.relative_depth`).
+
+Denominators, shared by every lens result including section 9.6. `n_positions` counts valid next-token subword positions: index `t` counts when both `t` and `t + 1` are real tokens, so the last position of a sequence and any padding are excluded. `top1_acc` is the fraction of those positions whose argmax token id equals the id of token `t + 1`. `entropy_mean` and `kl_mean` are means over those same positions. `ws4_lens.metrics.top1_accuracy` is the helper for that fraction on the targets it is given: it ignores targets `< 0` and returns `0.0` when none remain. It does not itself drop padding or restrict positions to word boundaries; a caller that wants the column's denominator must pass only the valid next-token positions, or mark the others with a negative target. `upos_top1_acc` is not that fraction. Its denominator is the number of UD words with non-null `next_upos` whose last subword still has a next token; the numerator counts those words for which `token_to_upos` of the decoded top-1 token equals `next_upos`. The value is null when that count is zero or no lexicon is used. `n_positions` is not the UPOS denominator. Do not redefine `top1_acc` as word-boundary accuracy or as agreement with the final layer.
 
 ### 9.4 Per-token results (`results/lens/tokens/{model}__{dataset}.parquet`)
 For the demo. One row per (sequence, position, lens, layer). Columns: `seq_id, pos, token, target_token, lens, layer, top1_token, top1_prob, entropy, kl`. Limit to 100 sequences per dataset.
@@ -175,6 +177,23 @@ For the demo. One row per (sequence, position, lens, layer). Columns: `seq_id, p
 ### 9.5 Checkpoints
 `checkpoints/tuned_lens/{model}.pt`: `state_dict` of `ws4_lens.tuned_lens.TunedLensTranslators`, plus `{"model": key, "train_data": "isdt_train", "epochs": ..., "seed": 42}` in `checkpoints/tuned_lens/{model}.json`.
 `checkpoints/jacobian_lens/{model}.pt`: tensor `[L + 1, d, d]` (identity at `L`).
+
+### 9.6 Opt-in mGPT logit lens (bounded PUD diagnostic)
+
+This subsection is the contract for a small `mgpt` UPOS/token diagnostic. It adds no shared function and no column. X7 consumes it; GPT-2 and GePpeTto stay on sections 9.1–9.5.
+
+**Scope.** `mgpt` may be evaluated with the standard logit lens only (`lens = "logit"`) on `pud_en` and `pud_it`. Use the section 1.1 registry row: Hugging Face id `ai-forever/mGPT`, `L = 24`, hidden size `2048`, `dtype = float16`, and the `revision` stored in `configs/models.yaml`. `hidden_states` therefore has 25 tensors, indices `0..24`. Section 9.2 applies unchanged, including `logits_l = W_U(ln_f(h_l))` for `l < L`, `logits_L = W_U(h_L)` with no second `ln_f`, and the sanity check that `logits_L` equals `model(...).logits`. Weights stay frozen and are loaded only through `lib.data.load_model` with `lib.registry.get_model_spec("mgpt")`. This diagnostic does not add a WikiText run, a tuned lens, a Jacobian lens, or section 9.5 checkpoints, and it does not require a full mGPT next-UPOS probing sweep.
+
+**Lexicon and positions.** Build the lexicon with `build_upos_lexicon` on the train split of the train treebank: EWT train for `pud_en`, ISDT train for `pud_it` (section 1.2). Do not build it from dev, test, or PUD labels. Encode pre-split PUD words with `lib.alignment.encode_words(..., add_bos=True)`, as in section 9.1. The UPOS-bridge position of word `w` is the last subword of `w`, and the gold label is `next_upos` of `w`. The last word of a sentence has null `next_upos` and is not a UPOS target. The tokenizer is the one `load_model` returns for this decoder, loaded with `tokenizer_kwargs={"add_prefix_space": True}` (section 1.1). Pass an explicit `max_length` of `2048`, the mGPT maximum in section 3.
+
+**Subset provenance.** A small sentence subset is allowed. Take the first `N` sentences in word-table order (section 2: file order, words in sentence order) and record `N` in the run config. If the treebank has fewer than `N` sentences, use all of them and record the actual count. The config and the write-up must list every selected `sent_id`, the model id and revision, the tokenizer and `add_prefix_space`, `N`, the batch size, `max_length`, how many sentences were truncated, how many words lost every subword, `n_positions`, the UPOS-bridge count, and lexicon coverage. Coverage is the split of bridge predictions into a lexicon hit (exact or lowercase), a punctuation or number rule, and `X`, using the existing `token_to_upos` rules; `X` stays in the denominator. A subset result is a diagnostic on that sample. The parquet paths do not encode `N`, so the write-up, config, and any figure or page must state the sample size and must not present the run as full-PUD evaluation.
+
+**Files and schemas.** Write sections 9.3 and 9.4 through `lens_result_path("mgpt", dataset, per_token=...)` with `dataset` in `{pud_en, pud_it}` and only `lens = "logit"`. The aggregate file has 25 rows (layers `0..24`). The per-token file still holds at most 100 sequences; do not raise that cap. No new column, path helper, or shared signature is required. `get_model_spec`, `load_model`, `encode_words`, the existing logit lens and evaluator, `entropy`, `kl_to_final`, `top1_accuracy`, `build_upos_lexicon`, `token_to_upos`, and `lens_result_path` are sufficient.
+
+**Diagnostics.** Early threshold crossing and persistent top-1 agreement are different claims. Report both in the write-up. Do not add columns for them, and do not collapse them into one layer index.
+
+- *Early threshold crossing* is the descriptive proxy already used for the lens commitment layer (`viz.lens_plots.compute_commitment_layer`). On an aggregate curve `y_0..y_L` (`top1_acc` or `upos_top1_acc`), it is the first layer `l*` with `y_{l*} >= 0.90 * max_l y_l`, and `tau* = l* / L`. It says when the curve reaches 90% of its own maximum, which is not 90% accuracy. A curve whose maximum is not positive has no meaningful crossing: the helper returns layer 0 only as a sentinel, and the write-up must say the curve never rises.
+- *Persistent top-1 agreement* is per position, on the same last-subword positions as the UPOS bridge. For each such position it is the earliest layer whose prediction stays identical to that position's layer-`L` prediction at every later layer through `L`. Token persistence compares top-1 token ids. UPOS persistence compares `token_to_upos` of those tokens. This is agreement with the final prediction, including when both are wrong. A position that matches layer `L` and then changes again before `L` has no persistence layer. Vocabulary ties keep the existing `argmax` (lowest index) and are not broken a second time. Count reversals and `X` tags; do not drop them.
 
 ## 10. Python interfaces
 Signatures that other tasks depend on. Owners may add private helpers but must not change these without a contract PR. NumPy arrays are `np.ndarray`, tensors are `torch.Tensor`.
